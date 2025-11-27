@@ -21,6 +21,9 @@ PRESSURE_COLUMNS = ["P1", "P2", "P3"]  # Units: mbar
 TURBO_COLUMN = "Pumping turbo speed"  # Units: %
 RESISTANCE_COLUMNS = ["R MMR1 1", "R MMR1 2", "R MMR1 3"]  # Units: Ohm
 VALVE_COLUMNS = [f"VE{i}" for i in range(1, 40)]
+MIXTURE_COLUMN = "P/T"  # Mixture percentage
+TURBO_AUX_COLUMN = "Turbo AUX"  # OVC turbo status (On/Off)
+PULSE_TUBE_COLUMN = "PT"  # Pulse tube status (On/Off)
 
 
 def load_config():
@@ -642,6 +645,61 @@ def main():
             resistance_df = df[[time_col] + resistance_cols_available].copy()
             resistance_df = downsample_for_chart(resistance_df)
             fig = create_interactive_chart(resistance_df, time_col, resistance_cols_available, y_label="Resistance (Ω)", log_scale=resistance_log)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+    
+    # Mixture Percentage Section (P/T)
+    st.header("🧪 Mixture Percentage (P/T)")
+    st.caption("📍 Latest reading from selected date range")
+    
+    if MIXTURE_COLUMN in df.columns:
+        current_val = pd.to_numeric(df[MIXTURE_COLUMN], errors="coerce").iloc[-1]
+        st.metric(
+            label="P/T (%)",
+            value=f"{current_val:.3f}" if pd.notna(current_val) else "N/A"
+        )
+        
+        if has_time:
+            mixture_df = df[[time_col, MIXTURE_COLUMN]].copy()
+            mixture_df = downsample_for_chart(mixture_df)
+            fig = create_interactive_chart(mixture_df, time_col, [MIXTURE_COLUMN], y_label="Mixture (%)", log_scale=False)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+    
+    # OVC Turbo Status Section (Turbo AUX)
+    st.header("🔄 OVC Turbo Status (Turbo AUX)")
+    st.caption("📍 Latest reading from selected date range")
+    
+    if TURBO_AUX_COLUMN in df.columns:
+        current_val = pd.to_numeric(df[TURBO_AUX_COLUMN], errors="coerce").iloc[-1]
+        status_text = "ON" if current_val == 1 else "OFF"
+        status_icon = "🟢" if current_val == 1 else "🔴"
+        st.metric(
+            label="Turbo AUX",
+            value=f"{status_icon} {status_text}"
+        )
+        
+        if has_time:
+            turbo_aux_df = df[[time_col, TURBO_AUX_COLUMN]].copy()
+            turbo_aux_df = downsample_for_chart(turbo_aux_df)
+            fig = create_interactive_chart(turbo_aux_df, time_col, [TURBO_AUX_COLUMN], y_label="Status (0=Off, 1=On)", log_scale=False)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+    
+    # Pulse Tube Status Section (PT)
+    st.header("❄️ Pulse Tube Status (PT)")
+    st.caption("📍 Latest reading from selected date range")
+    
+    if PULSE_TUBE_COLUMN in df.columns:
+        current_val = pd.to_numeric(df[PULSE_TUBE_COLUMN], errors="coerce").iloc[-1]
+        status_text = "ON" if current_val == 1 else "OFF"
+        status_icon = "🟢" if current_val == 1 else "🔴"
+        st.metric(
+            label="Pulse Tube",
+            value=f"{status_icon} {status_text}"
+        )
+        
+        if has_time:
+            pt_df = df[[time_col, PULSE_TUBE_COLUMN]].copy()
+            pt_df = downsample_for_chart(pt_df)
+            fig = create_interactive_chart(pt_df, time_col, [PULSE_TUBE_COLUMN], y_label="Status (0=Off, 1=On)", log_scale=False)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Valve Status Section
