@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import requests
 import streamlit as st
+import plotly.graph_objects as go
 
 # Configuration
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -101,34 +102,130 @@ def get_files_for_date_range(start_date, end_date):
     return files
 
 
-def load_multiple_data_files(filepaths):
-    """Load and concatenate multiple data files"""
+@st.cache_data(ttl=300, show_spinner=False)
+def load_single_file_cached(filepath):
+    """Load a single data file with caching"""
+    return load_data(filepath)
+
+
+def load_multiple_data_files(filepaths, show_progress=True):
+    """Load and concatenate multiple data files with progress indicator"""
     if not filepaths:
         return None
     
     all_dfs = []
-    for filepath in filepaths:
-        df = load_data(filepath)
+    
+    # Show progress bar for multiple files
+    if show_progress and len(filepaths) > 1:
+        progress_bar = st.progress(0, text="Loading data files...")
+    else:
+        progress_bar = None
+    
+    for i, filepath in enumerate(filepaths):
+        df = load_single_file_cached(filepath)
         if df is not None:
             # Add date column from filename
             base = os.path.basename(filepath).replace(".txt", "")
             try:
                 file_date = datetime.strptime(base, "%m%d%y").strftime("%Y-%m-%d")
+                df = df.copy()  # Avoid modifying cached data
                 df['file_date'] = file_date
                 # Create combined datetime string for x-axis
                 if 'time_str' in df.columns:
                     df['datetime_str'] = file_date + ' ' + df['time_str']
             except ValueError:
+                df = df.copy()
                 df['file_date'] = base
                 if 'time_str' in df.columns:
                     df['datetime_str'] = df['time_str']
             all_dfs.append(df)
+        
+        # Update progress
+        if progress_bar is not None:
+            progress_bar.progress((i + 1) / len(filepaths), text=f"Loading file {i + 1} of {len(filepaths)}...")
+    
+    # Clear progress bar
+    if progress_bar is not None:
+        progress_bar.empty()
     
     if not all_dfs:
         return None
     
     combined = pd.concat(all_dfs, ignore_index=True)
     return combined
+
+
+def downsample_for_chart(df, max_points=2000):
+    """Downsample dataframe for faster chart rendering"""
+    if len(df) <= max_points:
+        return df
+    
+    # Calculate step size to get approximately max_points
+    step = len(df) // max_points
+    return df.iloc[::step].copy()
+
+
+def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400, log_scale=False):
+    """Create an interactive Plotly chart with zoom, crosshairs, and hover values"""
+    fig = go.Figure()
+    
+    # Get x values
+    x_values = df[x_col].tolist()
+    
+    # Add traces for each y column
+    for col in y_cols:
+        if col in df.columns:
+            y_values = pd.to_numeric(df[col], errors="coerce").tolist()
+            fig.add_trace(go.Scattergl(
+                x=x_values,
+                y=y_values,
+                mode='lines',
+                name=col,
+                hovertemplate=f'<b>{col}</b><br>Time: %{{x}}<br>Value: %{{y:.6g}}<extra></extra>'
+            ))
+    
+    # Configure layout with interactivity
+    fig.update_layout(
+        title=title,
+        xaxis_title="Time",
+        yaxis_title=y_label,
+        height=height,
+        hovermode='x unified',  # Shows all values at cursor position
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        # Enable proper 2D zoom (box zoom for both axes)
+        dragmode='zoom',
+        yaxis=dict(
+            type='log' if log_scale else 'linear',
+            fixedrange=False,  # Allow y-axis zoom
+        ),
+        xaxis=dict(
+            fixedrange=False,  # Allow x-axis zoom
+        ),
+    )
+    
+    # Add spike lines (crosshairs)
+    fig.update_xaxes(
+        showspikes=True,
+        spikecolor="gray",
+        spikethickness=1,
+        spikedash="dot",
+        spikemode="across"
+    )
+    fig.update_yaxes(
+        showspikes=True,
+        spikecolor="gray",
+        spikethickness=1,
+        spikedash="dot",
+        spikemode="across"
+    )
+    
+    return fig
 
 
 def load_data(filepath):
@@ -138,12 +235,14 @@ def load_data(filepath):
         # Suppress the header/data length mismatch warning - it's expected due to file format
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+            # Only load columns we need for faster parsing
             df = pd.read_csv(
                 filepath, 
                 sep="\t", 
                 encoding="latin-1",
                 index_col=False,
-                on_bad_lines='skip'
+                on_bad_lines='skip',
+                low_memory=False
             )
         
         # Clean column names (remove extra spaces and carriage returns)
@@ -303,14 +402,57 @@ def render_valve_timeline(df):
     
     # Create valve dataframe with time index
     valve_df = df[[x_col] + valve_cols].copy()
-    valve_df = valve_df.set_index(x_col)
     
-    # Convert to numeric (0/1)
-    for col in valve_df.columns:
-        valve_df[col] = pd.to_numeric(valve_df[col], errors="coerce")
+    # Downsample for performance
+    valve_df = downsample_for_chart(valve_df, max_points=1500)
     
-    # Display as line chart (each valve is a line at 0 or 1)
-    st.line_chart(valve_df)
+    # Get x values as list
+    x_values = valve_df[x_col].tolist()
+    
+    # Create interactive Plotly chart for valves
+    fig = go.Figure()
+    
+    for i, col in enumerate(valve_cols):
+        if col in valve_df.columns:
+            y_values = pd.to_numeric(valve_df[col], errors="coerce").tolist()
+            # Only show VE1 by default, hide others (click legend to show)
+            fig.add_trace(go.Scattergl(
+                x=x_values,
+                y=y_values,
+                mode='lines',
+                name=col,
+                visible=True if col == "VE1" else "legendonly",
+                hovertemplate=f'<b>{col}</b><br>Time: %{{x}}<br>State: %{{y}}<extra></extra>'
+            ))
+    
+    fig.update_layout(
+        xaxis_title="Time",
+        yaxis_title="Valve State (0=Closed, 1=Open)",
+        height=500,
+        hovermode='x unified',
+        dragmode='zoom',  # Enable 2D zoom
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        xaxis=dict(
+            fixedrange=False,
+        ),
+        yaxis=dict(
+            tickmode='array',
+            tickvals=[0, 1],
+            ticktext=['Closed', 'Open'],
+            fixedrange=False,
+        )
+    )
+    
+    fig.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikedash="dot", spikemode="across")
+    fig.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikedash="dot", spikemode="across")
+    
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
 
 
 def main():
@@ -415,12 +557,13 @@ def main():
     date_range_str = f"{start_date}" if start_date == end_date else f"{start_date} to {end_date}"
     st.info(f"📅 **Date Range:** {date_range_str} | **Files:** {len(files_to_load)} | **Rows:** {len(df)} | **Columns:** {len(df.columns)}")
     
-    # Temperature Section
-    st.header("🌡️ Temperatures (K)")
-    
     # Determine which time column to use (datetime_str for multi-file, time_str for single)
     time_col = 'datetime_str' if 'datetime_str' in df.columns else 'time_str'
     has_time = time_col in df.columns
+    
+    # Temperature Section
+    st.header("🌡️ Temperatures (K)")
+    st.caption("📍 Latest reading from selected date range")
     
     # Current values as metrics
     if len(df) > 0:
@@ -434,17 +577,18 @@ def main():
                     value=f"{current_val:.6f}" if pd.notna(current_val) else "N/A"
                 )
     
-    # Temperature charts with time x-axis
+    # Temperature charts with time x-axis (downsampled for performance)
     temp_cols = [c for c in TEMP_COLUMNS if c in df.columns]
     if temp_cols and has_time:
+        temp_log = st.checkbox("Log scale", value=False, key="temp_log")
         temp_df = df[[time_col] + temp_cols].copy()
-        temp_df = temp_df.set_index(time_col)
-        for col in temp_df.columns:
-            temp_df[col] = pd.to_numeric(temp_df[col], errors="coerce")
-        st.line_chart(temp_df)
+        temp_df = downsample_for_chart(temp_df)
+        fig = create_interactive_chart(temp_df, time_col, temp_cols, y_label="Temperature (K)", log_scale=temp_log)
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pressure Section
     st.header("📊 Pressure (mbar)")
+    st.caption("📍 Latest reading from selected date range")
     
     pressure_cols_available = [c for c in PRESSURE_COLUMNS if c in df.columns]
     if pressure_cols_available:
@@ -457,30 +601,31 @@ def main():
             )
         
         if has_time:
+            pressure_log = st.checkbox("Log scale", value=True, key="pressure_log")
             pressure_df = df[[time_col] + pressure_cols_available].copy()
-            pressure_df = pressure_df.set_index(time_col)
-            for col in pressure_df.columns:
-                pressure_df[col] = pd.to_numeric(pressure_df[col], errors="coerce")
-            st.line_chart(pressure_df)
+            pressure_df = downsample_for_chart(pressure_df)
+            fig = create_interactive_chart(pressure_df, time_col, pressure_cols_available, y_label="Pressure (mbar)", log_scale=pressure_log)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Turbo Speed Section
     st.header("🔄 Turbo Pump Speed (%)")
+    st.caption("📍 Latest reading from selected date range")
     
     if TURBO_COLUMN in df.columns:
-        current_val = pd.to_numeric(df[TURBO_COLUMN], errors="coerce").iloc[-1]
         st.metric(
             label=f"{TURBO_COLUMN} (%)",
-            value=f"{current_val:.2f}" if pd.notna(current_val) else "N/A"
+            value=f"{pd.to_numeric(df[TURBO_COLUMN], errors='coerce').iloc[-1]:.2f}" if pd.notna(pd.to_numeric(df[TURBO_COLUMN], errors='coerce').iloc[-1]) else "N/A"
         )
         
         if has_time:
             turbo_df = df[[time_col, TURBO_COLUMN]].copy()
-            turbo_df = turbo_df.set_index(time_col)
-            turbo_df[TURBO_COLUMN] = pd.to_numeric(turbo_df[TURBO_COLUMN], errors="coerce")
-            st.line_chart(turbo_df)
+            turbo_df = downsample_for_chart(turbo_df)
+            fig = create_interactive_chart(turbo_df, time_col, [TURBO_COLUMN], y_label="Speed (%)", log_scale=False)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Resistance Section
     st.header("⚡ Resistance MMR1 (Ω)")
+    st.caption("📍 Latest reading from selected date range")
     
     resistance_cols_available = [c for c in RESISTANCE_COLUMNS if c in df.columns]
     if resistance_cols_available:
@@ -493,11 +638,11 @@ def main():
             )
         
         if has_time:
+            resistance_log = st.checkbox("Log scale", value=False, key="resistance_log")
             resistance_df = df[[time_col] + resistance_cols_available].copy()
-            resistance_df = resistance_df.set_index(time_col)
-            for col in resistance_df.columns:
-                resistance_df[col] = pd.to_numeric(resistance_df[col], errors="coerce")
-            st.line_chart(resistance_df)
+            resistance_df = downsample_for_chart(resistance_df)
+            fig = create_interactive_chart(resistance_df, time_col, resistance_cols_available, y_label="Resistance (Ω)", log_scale=resistance_log)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Valve Status Section
     st.header("🔧 Valve Status")
