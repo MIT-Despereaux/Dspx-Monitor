@@ -18,6 +18,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 # Column definitions with units
 TEMP_COLUMNS = ["full range", "still", "Platine 4K"]  # Units: K (Kelvin)
 PRESSURE_COLUMNS = ["P1", "P2", "P3"]  # Units: mbar
+PRESSURE_K_COLUMNS = ["K3", "K4", "K5", "K6", "K8"]  # Additional pressure sensors
 TURBO_COLUMN = "Pumping turbo speed"  # Units: %
 RESISTANCE_COLUMNS = ["R MMR1 1", "R MMR1 2", "R MMR1 3"]  # Units: Ohm
 VALVE_COLUMNS = [f"VE{i}" for i in range(1, 40)]
@@ -608,6 +609,27 @@ def main():
             pressure_df = df[[time_col] + pressure_cols_available].copy()
             pressure_df = downsample_for_chart(pressure_df)
             fig = create_interactive_chart(pressure_df, time_col, pressure_cols_available, y_label="Pressure (mbar)", log_scale=pressure_log)
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+    
+    # Pressure K Section (K3, K4, K5, K6, K8)
+    st.header("📊 Pressure Sensors (K3-K8)")
+    st.caption("📍 Latest reading from selected date range")
+    
+    pressure_k_cols_available = [c for c in PRESSURE_K_COLUMNS if c in df.columns]
+    if pressure_k_cols_available:
+        metric_cols = st.columns(len(pressure_k_cols_available))
+        for i, col_name in enumerate(pressure_k_cols_available):
+            current_val = pd.to_numeric(df[col_name], errors="coerce").iloc[-1]
+            metric_cols[i].metric(
+                label=col_name,
+                value=f"{current_val:.2f}" if pd.notna(current_val) else "N/A"
+            )
+        
+        if has_time:
+            pressure_k_log = st.checkbox("Log scale", value=False, key="pressure_k_log")
+            pressure_k_df = df[[time_col] + pressure_k_cols_available].copy()
+            pressure_k_df = downsample_for_chart(pressure_k_df)
+            fig = create_interactive_chart(pressure_k_df, time_col, pressure_k_cols_available, y_label="Pressure", log_scale=pressure_k_log)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Turbo Speed Section
