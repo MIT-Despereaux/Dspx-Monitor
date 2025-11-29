@@ -35,7 +35,7 @@ Cryogenic Dilution Refrigerator Monitoring Dashboard built with Streamlit and Pl
 
 ### Valve Status
 - Visual grid display of all 39 valves (VE1-VE39)
-- 🟢 Open (1) | 🔴 Closed (0)
+- 🟢 Open | 🔴 Closed
 - Interactive timeline chart (VE1 shown by default)
 - Click legend to show/hide individual valves
 

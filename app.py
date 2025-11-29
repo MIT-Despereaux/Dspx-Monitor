@@ -729,7 +729,7 @@ def main():
     
     # Current state grid
     st.subheader("Current State")
-    st.caption("🟢 Open (1) | 🔴 Closed (0)")
+    st.caption("🟢 Open | 🔴 Closed")
     render_valve_grid(df)
     
     # Valve timeline chart
