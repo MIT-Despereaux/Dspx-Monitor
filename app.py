@@ -4,6 +4,7 @@ Streamlit app for monitoring temperature, pressure, flow, resistance, and valve 
 """
 
 import os
+import re
 import json
 from datetime import datetime, timedelta
 import pandas as pd
@@ -14,6 +15,7 @@ import plotly.graph_objects as go
 # Configuration
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 # Column definitions with units
 TEMP_COLUMNS = ["full range", "still", "Platine 4K"]  # Units: K (Kelvin)
@@ -21,10 +23,39 @@ PRESSURE_COLUMNS = ["P1", "P2", "P3"]  # Units: mbar
 PRESSURE_K_COLUMNS = ["K3", "K4", "K5", "K6", "K8"]  # Additional pressure sensors
 TURBO_COLUMN = "Pumping turbo speed"  # Units: %
 RESISTANCE_COLUMNS = ["R MMR1 1", "R MMR1 2", "R MMR1 3"]  # Units: Ohm
-VALVE_COLUMNS = [f"VE{i}" for i in range(1, 40)]
 MIXTURE_COLUMN = "P/T"  # Mixture percentage
 TURBO_AUX_COLUMN = "Turbo AUX"  # OVC turbo status (On/Off)
 PULSE_TUBE_COLUMN = "PT"  # Pulse tube status (On/Off)
+
+# Valve positions for the fridge diagram (x, y coordinates in SVG viewBox units)
+# These positions need to be calibrated to match the actual diagram
+# Format: {valve_name: (x, y)}
+VALVE_POSITIONS = {
+    "VE1": (698, 135),
+    "VE2": (698, 798),
+    "VE3": (698, 1319),
+    "VE5": (71, 1319),
+    "VE6": (71, 798),
+    "VE7": (71, 135),
+    "VE8": (793, 798),
+    "VE9": (561, 1320),
+    "VE12": (346, 1126),
+    "VE13": (257, 798),
+    "VE14": (380, 798),
+    "VE16": (258, 1319),
+    "VE17": (166, 694),
+    "VE22": (254, 135),
+    "VE23": (877, 187),
+    "VE26": (605, 1126),
+    "VE27": (399, 1320),
+    "VE28": (967, 1320),
+    "VE30": (322, 562),
+    "VE31": (456, 350),
+    "VE32": (614, 560),
+    "VE33": (877, 694),
+    "VE37": (611, 97),
+}
+VALVE_COLUMNS = list(VALVE_POSITIONS.keys())
 
 
 def load_config():
@@ -458,6 +489,70 @@ def render_valve_timeline(df):
     
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
 
+def render_fridge_diagram(df):
+    """Render the fridge diagram with valve status overlays"""
+    if df is None or len(df) == 0:
+        st.warning("No data available for diagram")
+        return
+    
+    # Load the static SVG background
+    svg_path = os.path.join(ASSETS_DIR, "dspx_diagram_static.svg")
+    if not os.path.exists(svg_path):
+        st.warning(f"Diagram not found at {svg_path}")
+        return
+    
+    # Get latest valve states
+    latest = df.iloc[-1]
+    valve_states = {}
+    for valve in VALVE_COLUMNS:
+        if valve in df.columns:
+            try:
+                valve_states[valve] = int(latest[valve])
+            except (ValueError, TypeError):
+                valve_states[valve] = -1  # Unknown state
+    
+    # Read the base SVG
+    with open(svg_path, "r", encoding="utf-8") as f:
+        svg_content = f.read()
+    
+    # Create valve overlay SVG elements
+    valve_overlays = []
+    for valve, pos in VALVE_POSITIONS.items():
+        if valve in valve_states:
+            state = valve_states[valve]
+            if state == 1:
+                color = "#00ff00"  # Green for open
+            elif state == 0:
+                color = "#ff0000"  # Red for closed
+            else:
+                color = "#808080"  # Gray for unknown
+            
+            x, y = pos
+            # Create a circle with the valve state
+            valve_overlays.append(
+                f'<g transform="translate({x},{y})">'
+                f'<circle r="28" fill="{color}" stroke="#000" stroke-width="3" opacity="0.9"/>'
+                f'<text x="0" y="5" text-anchor="middle" font-size="20" font-weight="bold" fill="#000">{valve.replace("VE", "")}</text>'
+                f'</g>'
+            )
+    
+    # Insert valve overlays into SVG (before closing </svg> tag)
+    overlay_group = '<g id="valve-overlays">' + ''.join(valve_overlays) + '</g>'
+    modified_svg = svg_content.replace("</svg>", overlay_group + "</svg>")
+    
+    # Display the SVG in a container with controlled size
+    html_content = '<div style="display: flex; justify-content: center; max-width: 800px; margin: 0 auto; padding: 10px; border-radius: 8px;">' + modified_svg + '</div>'
+    st.markdown(html_content, unsafe_allow_html=True)
+    
+    # Add a legend
+    st.markdown("""
+        <div style="display: flex; gap: 20px; justify-content: center; margin-top: 10px;">
+            <span>🟢 <b>Open</b></span>
+            <span>🔴 <b>Closed</b></span>
+            <span>⚫ <b>Unknown</b></span>
+        </div>
+    """, unsafe_allow_html=True)
+
 
 def main():
     st.set_page_config(
@@ -736,6 +831,11 @@ def main():
     st.subheader("Valve Timeline")
     st.caption("Shows valve open/close states over time (1 = open, 0 = closed)")
     render_valve_timeline(df)
+    
+    # Fridge Diagram with Valve Status
+    st.subheader("Fridge Diagram")
+    st.caption("Visual representation of valve states on the fridge schematic")
+    render_fridge_diagram(df)
     
     # Raw data expander
     with st.expander("📋 View Raw Data"):
