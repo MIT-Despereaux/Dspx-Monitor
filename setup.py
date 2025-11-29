@@ -20,6 +20,7 @@ setup(
         "pandas>=1.3.0,<1.5.0",  # Pinned to avoid pyarrow dependency issues on 32-bit systems
         "requests>=2.25.0",
         "plotly>=5.0.0",
+        "protobuf<=3.20",
     ],
     extras_require={
         "dev": [
