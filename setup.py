@@ -10,9 +10,11 @@ setup(
     version="1.0.0",
     description="Cryogenic Dilution Refrigerator Monitoring Dashboard",
     author="MIT-Despereaux",
+    py_modules=["app"],  # Single module, not a package
+    packages=[],  # Explicitly empty to prevent auto-discovery of data/assets folders
     python_requires=">=3.8,<3.9",
     install_requires=[
-        "streamlit>=1.10.0,<1.18.0",  # Pinned to avoid pyarrow dependency (required in 1.18+)
+        "streamlit==0.62",  # Pinned to avoid pyarrow dependency
         "pandas>=1.3.0,<1.5.0",  # Pinned to avoid pyarrow dependency issues on 32-bit systems
         "requests>=2.25.0",
         "plotly>=5.0.0",
