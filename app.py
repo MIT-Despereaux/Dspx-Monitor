@@ -6,6 +6,7 @@ Streamlit app for monitoring temperature, pressure, flow, resistance, and valve 
 import os
 import re
 import json
+import base64
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
@@ -56,6 +57,11 @@ VALVE_POSITIONS = {
     "VE37": (611, 97),
 }
 VALVE_COLUMNS = list(VALVE_POSITIONS.keys())
+
+
+def display_metric(label, value):
+    """Display a metric value (compatible with Streamlit 0.62)"""
+    st.markdown(f"**{label}:** {value}")
 
 
 def load_config():
@@ -137,7 +143,7 @@ def get_files_for_date_range(start_date, end_date):
     return files
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache(ttl=300, show_spinner=False, allow_output_mutation=True)
 def load_single_file_cached(filepath):
     """Load a single data file with caching"""
     return load_data(filepath)
@@ -152,7 +158,7 @@ def load_multiple_data_files(filepaths, show_progress=True):
     
     # Show progress bar for multiple files
     if show_progress and len(filepaths) > 1:
-        progress_bar = st.progress(0, text="Loading data files...")
+        progress_bar = st.progress(0)
     else:
         progress_bar = None
     
@@ -177,7 +183,7 @@ def load_multiple_data_files(filepaths, show_progress=True):
         
         # Update progress
         if progress_bar is not None:
-            progress_bar.progress((i + 1) / len(filepaths), text=f"Loading file {i + 1} of {len(filepaths)}...")
+            progress_bar.progress((i + 1) / len(filepaths))
     
     # Clear progress bar
     if progress_bar is not None:
@@ -400,22 +406,20 @@ def render_valve_grid(df):
     # Get latest valve states
     latest = df.iloc[-1]
     
-    # Create grid layout (8 columns)
-    cols_per_row = 8
+    # Display valve states in a simple list
+    valve_states = []
+    for valve_name in VALVE_COLUMNS:
+        if valve_name in df.columns:
+            try:
+                state = int(latest[valve_name])
+                color = "🟢" if state == 1 else "🔴"
+                valve_states.append(f"{color} {valve_name}")
+            except (ValueError, TypeError):
+                valve_states.append(f"⚪ {valve_name}")
     
-    for i in range(0, len(VALVE_COLUMNS), cols_per_row):
-        cols = st.columns(cols_per_row)
-        for j, col in enumerate(cols):
-            valve_idx = i + j
-            if valve_idx < len(VALVE_COLUMNS):
-                valve_name = VALVE_COLUMNS[valve_idx]
-                if valve_name in df.columns:
-                    try:
-                        state = int(latest[valve_name])
-                        color = "🟢" if state == 1 else "🔴"
-                        col.markdown(f"{color} **{valve_name}**")
-                    except (ValueError, TypeError):
-                        col.markdown(f"⚪ **{valve_name}**")
+    # Display in rows of 8
+    for i in range(0, len(valve_states), 8):
+        st.write(" | ".join(valve_states[i:i+8]))
 
 
 def render_valve_timeline(df):
@@ -530,7 +534,7 @@ def render_fridge_diagram(df):
             x, y = pos
             # Create a circle with the valve state
             valve_overlays.append(
-                f'<g transform="translate({x},{y})">'
+                f'<g transform="translate({x},{y})">' 
                 f'<circle r="28" fill="{color}" stroke="#000" stroke-width="3" opacity="0.9"/>'
                 f'<text x="0" y="5" text-anchor="middle" font-size="20" font-weight="bold" fill="#000">{valve.replace("VE", "")}</text>'
                 f'</g>'
@@ -540,29 +544,21 @@ def render_fridge_diagram(df):
     overlay_group = '<g id="valve-overlays">' + ''.join(valve_overlays) + '</g>'
     modified_svg = svg_content.replace("</svg>", overlay_group + "</svg>")
     
-    # Display the SVG in a container with controlled size
-    html_content = '<div style="display: flex; justify-content: center; max-width: 800px; margin: 0 auto; padding: 10px; border-radius: 8px;">' + modified_svg + '</div>'
-    st.markdown(html_content, unsafe_allow_html=True)
+    # Encode SVG as base64 and display as image (Streamlit 0.62 compatible)
+    b64 = base64.b64encode(modified_svg.encode("utf-8")).decode("utf-8")
+    html = f'<p style="text-align:center;"><img src="data:image/svg+xml;base64,{b64}" style="max-width: 800px;"/></p>'
+    st.write(html, unsafe_allow_html=True)
     
     # Add a legend
-    st.markdown("""
-        <div style="display: flex; gap: 20px; justify-content: center; margin-top: 10px;">
-            <span>🟢 <b>Open</b></span>
-            <span>🔴 <b>Closed</b></span>
-            <span>⚫ <b>Unknown</b></span>
-        </div>
-    """, unsafe_allow_html=True)
+    st.write("🟢 Open | 🔴 Closed | ⚫ Unknown")
 
 
 def main():
-    st.set_page_config(
-        page_title="Dspx-Monitor",
-        page_icon="🧊",
-        layout="wide"
-    )
+    # Note: st.set_page_config not available in Streamlit 0.62
+    # Page will use default settings
     
     st.title("🧊 Dspx-Monitor Dashboard")
-    st.caption("Cryogenic Dilution Refrigerator Monitoring System")
+    st.text("Cryogenic Dilution Refrigerator Monitoring System")
     
     # Load config
     config = load_config()
@@ -571,75 +567,71 @@ def main():
     min_date, max_date = get_date_range_from_files()
     
     # Sidebar
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        
-        # Date range selection with calendar picker
-        if min_date is None or max_date is None:
-            st.error("No data files found in data/ directory")
-            return
-        
-        st.subheader("📅 Date Range")
-        
-        # Date picker for start and end dates
-        start_date = st.date_input(
-            "Start Date",
-            value=max_date,  # Default to most recent date
-            min_value=min_date,
-            max_value=max_date,
-            help="Select the start date for data range"
-        )
-        
-        end_date = st.date_input(
-            "End Date",
-            value=max_date,  # Default to most recent date
-            min_value=min_date,
-            max_value=max_date,
-            help="Select the end date for data range"
-        )
-        
-        # Validate date range
-        if start_date > end_date:
-            st.error("Start date must be before or equal to end date")
-            return
-        
-        # Show how many files will be loaded
-        files_to_load = get_files_for_date_range(start_date, end_date)
-        st.caption(f"📁 {len(files_to_load)} file(s) available in range")
-        
-        if st.button("🔄 Refresh Data"):
-            st.experimental_rerun()
-        
-        st.divider()
-        
-        # Slack configuration
-        st.header("📢 Slack Notifications")
-        webhook_url = st.text_input(
-            "Webhook URL",
-            value=config.get("slack_webhook_url", ""),
-            type="password",
-            help="Enter your Slack Incoming Webhook URL"
-        )
-        
-        # Save webhook URL if changed
-        if webhook_url != config.get("slack_webhook_url", ""):
-            config["slack_webhook_url"] = webhook_url
-            save_config(config)
-            st.success("Webhook URL saved!")
-        
-        if st.button("📊 Send Daily Report"):
-            if files_to_load:
-                df = load_multiple_data_files(files_to_load)
-                if df is not None:
-                    stats = calculate_daily_stats(df)
-                    date_range_str = f"{start_date} to {end_date}"
-                    success, message = send_slack_report(webhook_url, stats, date_range_str)
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
-            else:
-                st.error("No files available for selected date range")
+    st.sidebar.header("⚙️ Settings")
+    
+    # Date range selection with calendar picker
+    if min_date is None or max_date is None:
+        st.sidebar.error("No data files found in data/ directory")
+        return
+    
+    st.sidebar.subheader("📅 Date Range")
+    
+    # Date picker for start and end dates
+    start_date = st.sidebar.date_input(
+        "Start Date",
+        value=max_date,  # Default to most recent date
+        min_value=min_date,
+        max_value=max_date
+    )
+    
+    end_date = st.sidebar.date_input(
+        "End Date",
+        value=max_date,  # Default to most recent date
+        min_value=min_date,
+        max_value=max_date
+    )
+    
+    # Validate date range
+    if start_date > end_date:
+        st.sidebar.error("Start date must be before or equal to end date")
+        return
+    
+    # Show how many files will be loaded
+    files_to_load = get_files_for_date_range(start_date, end_date)
+    st.sidebar.text(f"📁 {len(files_to_load)} file(s) available in range")
+    
+    if st.sidebar.button("🔄 Refresh Data"):
+        st.caching.clear_cache()
+    
+    st.sidebar.markdown("---")
+    
+    # Slack configuration
+    st.sidebar.header("📢 Slack Notifications")
+    webhook_url = st.sidebar.text_input(
+        "Webhook URL",
+        value=config.get("slack_webhook_url", ""),
+        type="password"
+    )
+    
+    # Save webhook URL if changed
+    if webhook_url != config.get("slack_webhook_url", ""):
+        config["slack_webhook_url"] = webhook_url
+        save_config(config)
+        st.sidebar.success("Webhook URL saved!")
+    
+    if st.sidebar.button("📊 Send Daily Report"):
+        if files_to_load:
+            df = load_multiple_data_files(files_to_load)
+            if df is not None:
+                stats = calculate_daily_stats(df)
+                date_range_str = f"{start_date} to {end_date}"
+                success, message = send_slack_report(webhook_url, stats, date_range_str)
+                if success:
+                    st.sidebar.success(message)
+                else:
+                    st.sidebar.error(message)
+        else:
+            st.sidebar.error("No files available for selected date range")
     
     # Load data for selected date range
     if not files_to_load:
@@ -662,19 +654,16 @@ def main():
     
     # Temperature Section
     st.header("🌡️ Temperatures (K)")
-    st.caption("📍 Latest reading from selected date range")
+    st.text("📍 Latest reading from selected date range")
     
     # Current values as metrics
     if len(df) > 0:
         temp_cols_available = [c for c in TEMP_COLUMNS if c in df.columns]
         if temp_cols_available:
-            metric_cols = st.columns(len(temp_cols_available))
-            for i, col_name in enumerate(temp_cols_available):
+            for col_name in temp_cols_available:
                 current_val = pd.to_numeric(df[col_name], errors="coerce").iloc[-1]
-                metric_cols[i].metric(
-                    label=f"{col_name} (K)",
-                    value=f"{current_val:.6f}" if pd.notna(current_val) else "N/A"
-                )
+                val_str = f"{current_val:.6f}" if pd.notna(current_val) else "N/A"
+                display_metric(f"{col_name} (K)", val_str)
     
     # Temperature charts with time x-axis (downsampled for performance)
     temp_cols = [c for c in TEMP_COLUMNS if c in df.columns]
@@ -687,17 +676,14 @@ def main():
     
     # Pressure Section
     st.header("📊 Pressure (mbar)")
-    st.caption("📍 Latest reading from selected date range")
+    st.text("📍 Latest reading from selected date range")
     
     pressure_cols_available = [c for c in PRESSURE_COLUMNS if c in df.columns]
     if pressure_cols_available:
-        metric_cols = st.columns(len(pressure_cols_available))
-        for i, col_name in enumerate(pressure_cols_available):
+        for col_name in pressure_cols_available:
             current_val = pd.to_numeric(df[col_name], errors="coerce").iloc[-1]
-            metric_cols[i].metric(
-                label=f"{col_name} (mbar)",
-                value=f"{current_val:.6e}" if pd.notna(current_val) else "N/A"
-            )
+            val_str = f"{current_val:.6e}" if pd.notna(current_val) else "N/A"
+            display_metric(f"{col_name} (mbar)", val_str)
         
         if has_time:
             pressure_log = st.checkbox("Log scale", value=True, key="pressure_log")
@@ -708,17 +694,14 @@ def main():
     
     # Pressure K Section (K3, K4, K5, K6, K8)
     st.header("📊 Pressure Sensors (K3-K8)")
-    st.caption("📍 Latest reading from selected date range")
+    st.text("📍 Latest reading from selected date range")
     
     pressure_k_cols_available = [c for c in PRESSURE_K_COLUMNS if c in df.columns]
     if pressure_k_cols_available:
-        metric_cols = st.columns(len(pressure_k_cols_available))
-        for i, col_name in enumerate(pressure_k_cols_available):
+        for col_name in pressure_k_cols_available:
             current_val = pd.to_numeric(df[col_name], errors="coerce").iloc[-1]
-            metric_cols[i].metric(
-                label=col_name,
-                value=f"{current_val:.2f}" if pd.notna(current_val) else "N/A"
-            )
+            val_str = f"{current_val:.2f}" if pd.notna(current_val) else "N/A"
+            display_metric(col_name, val_str)
         
         if has_time:
             pressure_k_log = st.checkbox("Log scale", value=False, key="pressure_k_log")
@@ -729,13 +712,12 @@ def main():
     
     # Turbo Speed Section
     st.header("🔄 Turbo Pump Speed (%)")
-    st.caption("📍 Latest reading from selected date range")
+    st.text("📍 Latest reading from selected date range")
     
     if TURBO_COLUMN in df.columns:
-        st.metric(
-            label=f"{TURBO_COLUMN} (%)",
-            value=f"{pd.to_numeric(df[TURBO_COLUMN], errors='coerce').iloc[-1]:.2f}" if pd.notna(pd.to_numeric(df[TURBO_COLUMN], errors='coerce').iloc[-1]) else "N/A"
-        )
+        current_val = pd.to_numeric(df[TURBO_COLUMN], errors='coerce').iloc[-1]
+        val_str = f"{current_val:.2f}" if pd.notna(current_val) else "N/A"
+        display_metric(f"{TURBO_COLUMN} (%)", val_str)
         
         if has_time:
             turbo_df = df[[time_col, TURBO_COLUMN]].copy()
@@ -745,17 +727,14 @@ def main():
     
     # Resistance Section
     st.header("⚡ Resistance MMR1 (Ω)")
-    st.caption("📍 Latest reading from selected date range")
+    st.text("📍 Latest reading from selected date range")
     
     resistance_cols_available = [c for c in RESISTANCE_COLUMNS if c in df.columns]
     if resistance_cols_available:
-        metric_cols = st.columns(len(resistance_cols_available))
-        for i, col_name in enumerate(resistance_cols_available):
+        for col_name in resistance_cols_available:
             current_val = pd.to_numeric(df[col_name], errors="coerce").iloc[-1]
-            metric_cols[i].metric(
-                label=f"{col_name} (Ω)",
-                value=f"{current_val:.3f}" if pd.notna(current_val) else "N/A"
-            )
+            val_str = f"{current_val:.3f}" if pd.notna(current_val) else "N/A"
+            display_metric(f"{col_name} (Ω)", val_str)
         
         if has_time:
             resistance_log = st.checkbox("Log scale", value=False, key="resistance_log")
@@ -766,14 +745,12 @@ def main():
     
     # Mixture Percentage Section (P/T)
     st.header("🧪 Mixture Percentage (P/T)")
-    st.caption("📍 Latest reading from selected date range")
+    st.text("📍 Latest reading from selected date range")
     
     if MIXTURE_COLUMN in df.columns:
         current_val = pd.to_numeric(df[MIXTURE_COLUMN], errors="coerce").iloc[-1]
-        st.metric(
-            label="P/T (%)",
-            value=f"{current_val:.3f}" if pd.notna(current_val) else "N/A"
-        )
+        val_str = f"{current_val:.3f}" if pd.notna(current_val) else "N/A"
+        display_metric("P/T (%)", val_str)
         
         if has_time:
             mixture_df = df[[time_col, MIXTURE_COLUMN]].copy()
@@ -783,16 +760,13 @@ def main():
     
     # OVC Turbo Status Section (Turbo AUX)
     st.header("🔄 OVC Turbo Status (Turbo AUX)")
-    st.caption("📍 Latest reading from selected date range")
+    st.text("📍 Latest reading from selected date range")
     
     if TURBO_AUX_COLUMN in df.columns:
         current_val = pd.to_numeric(df[TURBO_AUX_COLUMN], errors="coerce").iloc[-1]
         status_text = "ON" if current_val == 1 else "OFF"
         status_icon = "🟢" if current_val == 1 else "🔴"
-        st.metric(
-            label="Turbo AUX",
-            value=f"{status_icon} {status_text}"
-        )
+        display_metric("Turbo AUX", f"{status_icon} {status_text}")
         
         if has_time:
             turbo_aux_df = df[[time_col, TURBO_AUX_COLUMN]].copy()
@@ -802,16 +776,13 @@ def main():
     
     # Pulse Tube Status Section (PT)
     st.header("❄️ Pulse Tube Status (PT)")
-    st.caption("📍 Latest reading from selected date range")
+    st.text("📍 Latest reading from selected date range")
     
     if PULSE_TUBE_COLUMN in df.columns:
         current_val = pd.to_numeric(df[PULSE_TUBE_COLUMN], errors="coerce").iloc[-1]
         status_text = "ON" if current_val == 1 else "OFF"
         status_icon = "🟢" if current_val == 1 else "🔴"
-        st.metric(
-            label="Pulse Tube",
-            value=f"{status_icon} {status_text}"
-        )
+        display_metric("Pulse Tube", f"{status_icon} {status_text}")
         
         if has_time:
             pt_df = df[[time_col, PULSE_TUBE_COLUMN]].copy()
@@ -824,22 +795,36 @@ def main():
     
     # Current state grid
     st.subheader("Current State")
-    st.caption("🟢 Open | 🔴 Closed")
+    st.text("🟢 Open | 🔴 Closed")
     render_valve_grid(df)
     
     # Valve timeline chart
     st.subheader("Valve Timeline")
-    st.caption("Shows valve open/close states over time (1 = open, 0 = closed)")
+    st.text("Shows valve open/close states over time (1 = open, 0 = closed)")
     render_valve_timeline(df)
     
     # Fridge Diagram with Valve Status
     st.subheader("Fridge Diagram")
-    st.caption("Visual representation of valve states on the fridge schematic")
+    st.text("Visual representation of valve states on the fridge schematic")
     render_fridge_diagram(df)
     
-    # Raw data expander
-    with st.expander("📋 View Raw Data"):
-        st.dataframe(df, use_container_width=True)
+    # Raw data section (using checkbox since expander not available in 0.62)
+    st.subheader("📋 Raw Data")
+    if st.checkbox("Show Raw Data"):
+        # Use st.table or st.write instead of st.dataframe for better compatibility
+        # Convert any datetime columns to strings to avoid timezone issues
+        df_display = df.copy()
+        # Remove time_str column as it's not correct
+        if 'time_str' in df_display.columns:
+            df_display = df_display.drop(columns=['time_str'])
+        if 'time' in df_display.columns:
+            df_display = df_display.drop(columns=['time'])
+        if 'file_date' in df_display.columns:
+            df_display = df_display.drop(columns=['file_date'])
+        for col in df_display.columns:
+            if df_display[col].dtype == 'datetime64[ns]' or 'datetime' in str(df_display[col].dtype):
+                df_display[col] = df_display[col].astype(str)
+        st.write(df_display)
 
 
 if __name__ == "__main__":
