@@ -4,7 +4,6 @@ Streamlit app for monitoring temperature, pressure, flow, resistance, and valve 
 """
 
 import os
-import re
 import json
 import base64
 from datetime import datetime, timedelta
@@ -349,8 +348,8 @@ def send_slack_report(webhook_url, stats, filename):
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": "🧊 Dspx-Monitor Daily Report",
-                "emoji": True
+                "text": "Dspx-Monitor Daily Report",
+                "emoji": False
             }
         },
         {
@@ -412,10 +411,10 @@ def render_valve_grid(df):
         if valve_name in df.columns:
             try:
                 state = int(latest[valve_name])
-                color = "🟢" if state == 1 else "🔴"
+                color = "[O]" if state == 1 else "[X]"
                 valve_states.append(f"{color} {valve_name}")
             except (ValueError, TypeError):
-                valve_states.append(f"⚪ {valve_name}")
+                valve_states.append(f"[?] {valve_name}")
     
     # Display in rows of 8
     for i in range(0, len(valve_states), 8):
@@ -550,14 +549,14 @@ def render_fridge_diagram(df):
     st.write(html, unsafe_allow_html=True)
     
     # Add a legend
-    st.write("🟢 Open | 🔴 Closed | ⚫ Unknown")
+    st.write("[GREEN] Open | [RED] Closed | [GRAY] Unknown")
 
 
 def main():
     # Note: st.set_page_config not available in Streamlit 0.62
     # Page will use default settings
     
-    st.title("🧊 Dspx-Monitor Dashboard")
+    st.title("Dspx-Monitor Dashboard")
     st.text("Cryogenic Dilution Refrigerator Monitoring System")
     
     # Load config
@@ -567,14 +566,14 @@ def main():
     min_date, max_date = get_date_range_from_files()
     
     # Sidebar
-    st.sidebar.header("⚙️ Settings")
+    st.sidebar.header("Settings")
     
     # Date range selection with calendar picker
     if min_date is None or max_date is None:
         st.sidebar.error("No data files found in data/ directory")
         return
     
-    st.sidebar.subheader("📅 Date Range")
+    st.sidebar.subheader("Date Range")
     
     # Date picker for start and end dates
     start_date = st.sidebar.date_input(
@@ -598,15 +597,15 @@ def main():
     
     # Show how many files will be loaded
     files_to_load = get_files_for_date_range(start_date, end_date)
-    st.sidebar.text(f"📁 {len(files_to_load)} file(s) available in range")
+    st.sidebar.text(f"{len(files_to_load)} file(s) available in range")
     
-    if st.sidebar.button("🔄 Refresh Data"):
+    if st.sidebar.button("Refresh Data"):
         st.caching.clear_cache()
     
     st.sidebar.markdown("---")
     
     # Slack configuration
-    st.sidebar.header("📢 Slack Notifications")
+    st.sidebar.header("Slack Notifications")
     webhook_url = st.sidebar.text_input(
         "Webhook URL",
         value=config.get("slack_webhook_url", ""),
@@ -619,7 +618,7 @@ def main():
         save_config(config)
         st.sidebar.success("Webhook URL saved!")
     
-    if st.sidebar.button("📊 Send Daily Report"):
+    if st.sidebar.button("Send Daily Report"):
         if files_to_load:
             df = load_multiple_data_files(files_to_load)
             if df is not None:
@@ -646,15 +645,15 @@ def main():
     
     # Display info
     date_range_str = f"{start_date}" if start_date == end_date else f"{start_date} to {end_date}"
-    st.info(f"📅 **Date Range:** {date_range_str} | **Files:** {len(files_to_load)} | **Rows:** {len(df)} | **Columns:** {len(df.columns)}")
+    st.info(f"Date Range: {date_range_str} | Files: {len(files_to_load)} | Rows: {len(df)} | Columns: {len(df.columns)}")
     
     # Determine which time column to use (datetime_str for multi-file, time_str for single)
     time_col = 'datetime_str' if 'datetime_str' in df.columns else 'time_str'
     has_time = time_col in df.columns
     
     # Temperature Section
-    st.header("🌡️ Temperatures (K)")
-    st.text("📍 Latest reading from selected date range")
+    st.header("Temperatures (K)")
+    st.text("Latest reading from selected date range")
     
     # Current values as metrics
     if len(df) > 0:
@@ -675,8 +674,8 @@ def main():
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pressure Section
-    st.header("📊 Pressure (mbar)")
-    st.text("📍 Latest reading from selected date range")
+    st.header("Pressure (mbar)")
+    st.text("Latest reading from selected date range")
     
     pressure_cols_available = [c for c in PRESSURE_COLUMNS if c in df.columns]
     if pressure_cols_available:
@@ -693,8 +692,8 @@ def main():
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pressure K Section (K3, K4, K5, K6, K8)
-    st.header("📊 Pressure Sensors (K3-K8)")
-    st.text("📍 Latest reading from selected date range")
+    st.header("Pressure Sensors (K3-K8)")
+    st.text("Latest reading from selected date range")
     
     pressure_k_cols_available = [c for c in PRESSURE_K_COLUMNS if c in df.columns]
     if pressure_k_cols_available:
@@ -711,8 +710,8 @@ def main():
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Turbo Speed Section
-    st.header("🔄 Turbo Pump Speed (%)")
-    st.text("📍 Latest reading from selected date range")
+    st.header("Turbo Pump Speed (%)")
+    st.text("Latest reading from selected date range")
     
     if TURBO_COLUMN in df.columns:
         current_val = pd.to_numeric(df[TURBO_COLUMN], errors='coerce').iloc[-1]
@@ -726,26 +725,26 @@ def main():
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Resistance Section
-    st.header("⚡ Resistance MMR1 (Ω)")
-    st.text("📍 Latest reading from selected date range")
+    st.header("Resistance MMR1 (Ohm)")
+    st.text("Latest reading from selected date range")
     
     resistance_cols_available = [c for c in RESISTANCE_COLUMNS if c in df.columns]
     if resistance_cols_available:
         for col_name in resistance_cols_available:
             current_val = pd.to_numeric(df[col_name], errors="coerce").iloc[-1]
             val_str = f"{current_val:.3f}" if pd.notna(current_val) else "N/A"
-            display_metric(f"{col_name} (Ω)", val_str)
+            display_metric(f"{col_name} (Ohm)", val_str)
         
         if has_time:
             resistance_log = st.checkbox("Log scale", value=False, key="resistance_log")
             resistance_df = df[[time_col] + resistance_cols_available].copy()
             resistance_df = downsample_for_chart(resistance_df)
-            fig = create_interactive_chart(resistance_df, time_col, resistance_cols_available, y_label="Resistance (Ω)", log_scale=resistance_log)
+            fig = create_interactive_chart(resistance_df, time_col, resistance_cols_available, y_label="Resistance (Ohm)", log_scale=resistance_log)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Mixture Percentage Section (P/T)
-    st.header("🧪 Mixture Percentage (P/T)")
-    st.text("📍 Latest reading from selected date range")
+    st.header("Mixture Percentage (P/T)")
+    st.text("Latest reading from selected date range")
     
     if MIXTURE_COLUMN in df.columns:
         current_val = pd.to_numeric(df[MIXTURE_COLUMN], errors="coerce").iloc[-1]
@@ -759,13 +758,13 @@ def main():
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # OVC Turbo Status Section (Turbo AUX)
-    st.header("🔄 OVC Turbo Status (Turbo AUX)")
-    st.text("📍 Latest reading from selected date range")
+    st.header("OVC Turbo Status (Turbo AUX)")
+    st.text("Latest reading from selected date range")
     
     if TURBO_AUX_COLUMN in df.columns:
         current_val = pd.to_numeric(df[TURBO_AUX_COLUMN], errors="coerce").iloc[-1]
         status_text = "ON" if current_val == 1 else "OFF"
-        status_icon = "🟢" if current_val == 1 else "🔴"
+        status_icon = "[ON]" if current_val == 1 else "[OFF]"
         display_metric("Turbo AUX", f"{status_icon} {status_text}")
         
         if has_time:
@@ -775,13 +774,13 @@ def main():
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pulse Tube Status Section (PT)
-    st.header("❄️ Pulse Tube Status (PT)")
-    st.text("📍 Latest reading from selected date range")
+    st.header("Pulse Tube Status (PT)")
+    st.text("Latest reading from selected date range")
     
     if PULSE_TUBE_COLUMN in df.columns:
         current_val = pd.to_numeric(df[PULSE_TUBE_COLUMN], errors="coerce").iloc[-1]
         status_text = "ON" if current_val == 1 else "OFF"
-        status_icon = "🟢" if current_val == 1 else "🔴"
+        status_icon = "[ON]" if current_val == 1 else "[OFF]"
         display_metric("Pulse Tube", f"{status_icon} {status_text}")
         
         if has_time:
@@ -791,11 +790,11 @@ def main():
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
     
     # Valve Status Section
-    st.header("🔧 Valve Status")
+    st.header("Valve Status")
     
     # Current state grid
     st.subheader("Current State")
-    st.text("🟢 Open | 🔴 Closed")
+    st.text("[O] Open | [X] Closed")
     render_valve_grid(df)
     
     # Valve timeline chart
@@ -809,7 +808,7 @@ def main():
     render_fridge_diagram(df)
     
     # Raw data section (using checkbox since expander not available in 0.62)
-    st.subheader("📋 Raw Data")
+    st.subheader("Raw Data")
     if st.checkbox("Show Raw Data"):
         # Use st.table or st.write instead of st.dataframe for better compatibility
         # Convert any datetime columns to strings to avoid timezone issues
