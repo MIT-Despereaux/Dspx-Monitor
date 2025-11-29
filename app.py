@@ -545,7 +545,7 @@ def render_fridge_diagram(df):
     
     # Encode SVG as base64 and display as image (Streamlit 0.62 compatible)
     b64 = base64.b64encode(modified_svg.encode("utf-8")).decode("utf-8")
-    html = f'<p style="text-align:center;"><img src="data:image/svg+xml;base64,{b64}" style="max-width: 800px;"/></p>'
+    html = f'<p style="text-align:center;"><img src="data:image/svg+xml;base64,{b64}" style="max-width: 600px;"/></p>'
     st.write(html, unsafe_allow_html=True)
     
     # Add a legend
