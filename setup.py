@@ -12,8 +12,8 @@ setup(
     author="MIT-Despereaux",
     python_requires=">=3.8,<3.9",
     install_requires=[
-        "streamlit==1.22.0",
-        # "pandas>=1.3.0,<1.5.0",  # Pinned to avoid pyarrow dependency issues on 32-bit systems
+        "streamlit>=1.10.0,<1.18.0",  # Pinned to avoid pyarrow dependency (required in 1.18+)
+        "pandas>=1.3.0,<1.5.0",  # Pinned to avoid pyarrow dependency issues on 32-bit systems
         "requests>=2.25.0",
         "plotly>=5.0.0",
     ],
