@@ -127,3 +127,7 @@ dmypy.json
 # Data folder (Symbolic Link)
 data*/
 data*
+
+# TOKEN files
+*.secret
+*.token
