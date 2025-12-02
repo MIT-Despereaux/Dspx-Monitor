@@ -21,6 +21,7 @@ setup(
         "requests>=2.25.0",
         "plotly>=5.0.0",
         "protobuf<=3.20",
+        "slack_bolt",
     ],
     extras_require={
         "dev": [

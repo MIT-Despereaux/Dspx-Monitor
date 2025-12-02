@@ -3,22 +3,115 @@ Dspx-Monitor: Cryogenic Dilution Refrigerator Monitoring Dashboard
 Streamlit app for monitoring temperature, pressure, flow, resistance, and valve states.
 """
 
+from __future__ import annotations
+
 import os
-import json
 import base64
+import logging
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
 import streamlit as st
 import plotly.graph_objects as go
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+
+# Setup logging
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Create a unique log file for each app run with timestamp
+# Use session state to persist the log filename across Streamlit reruns
+if 'log_filename' not in st.__dict__.get('session_state', {}):
+    _log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log"
+else:
+    _log_filename = None
+
+LOG_FILENAME = _log_filename if _log_filename else datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".log"
+LOG_FILEPATH = os.path.join(LOG_DIR, LOG_FILENAME)
+
+# Configure logging with explicit handler setup
+logger = logging.getLogger("dspx_monitor")
+logger.setLevel(logging.INFO)
+
+# Prevent duplicate handlers by checking if we already have a file handler for this path
+_has_handlers = False
+for handler in logger.handlers:
+    if isinstance(handler, logging.FileHandler):
+        _has_handlers = True
+        break
+
+if not _has_handlers:
+    # Clear any existing handlers first
+    logger.handlers.clear()
+    
+    # File handler
+    file_handler = logging.FileHandler(LOG_FILEPATH, encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(console_handler)
+    
+    # Prevent propagation to root logger (avoids duplicates)
+    logger.propagate = False
+    
+    # Initial startup messages
+    print("=== Dspx-Monitor Application Started ===")
+    print(f"Log file: {LOG_FILEPATH}")
+    logger.info("=== Dspx-Monitor Application Started ===")
+    logger.info(f"Log file: {LOG_FILEPATH}")
+
+# Load secrets: First check OS environment variables, then fall back to slack.secret file
+SECRETS = {}
+
+# Define the secret keys we're looking for
+SECRET_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_SIGNING_SECRET"]
+
+# First, try to get from OS environment variables
+for key in SECRET_KEYS:
+    env_value = os.environ.get(key)
+    if env_value:
+        SECRETS[key] = env_value
+        logger.info(f"Loaded {key} from environment variable")
+
+# Then, read from slack.secret file for any keys not already set from env
+if os.path.exists("slack.secret"):
+    logger.info("Reading secrets from slack.secret file")
+    with open("slack.secret", "r", encoding="utf-8") as f:
+        lines = f.readlines()
+        if lines:
+            for line in lines:
+                # ignore lines starting with #
+                if line.strip().startswith('#'):
+                    continue
+                key_value = line.strip().split('=', 1)
+                if len(key_value) == 2:
+                    key = key_value[0].strip()
+                    value = key_value[1].strip()
+                    # Only use file value if not already set from environment
+                    if key not in SECRETS:
+                        SECRETS[key] = value
+                        logger.info(f"Loaded {key} from slack.secret file")
+else:
+    logger.warning("slack.secret file not found")
 
 # Configuration
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+# CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 # Column definitions with units
 TEMP_COLUMNS = ["full range", "still", "Platine 4K"]  # Units: K (Kelvin)
+TEMP_COLUMNS_ALIAS = {
+    "full range": "Full Range (K)",
+    "still": "Still (K)",
+    "Platine 4K": "Platine 4K (K)"
+}
 PRESSURE_COLUMNS = ["P1", "P2", "P3"]  # Units: mbar
 PRESSURE_K_COLUMNS = ["K3", "K4", "K5", "K6", "K8"]  # Additional pressure sensors
 TURBO_COLUMN = "Pumping turbo speed"  # Units: %
@@ -62,19 +155,122 @@ def display_metric(label, value):
     """Display a metric value (compatible with Streamlit 0.62)"""
     st.markdown(f"**{label}:** {value}")
 
+def send_slack_dm(bot_token: str, user_id: str, message: str, blocks: list = None) -> tuple[bool, str]:
+    """
+    Send a direct message to a specific user.
+    
+    Args:
+        bot_token: Slack bot token (xoxb-...)
+        user_id: The user's Slack ID (e.g., U123456789)
+        message: Plain text message (used as fallback for blocks)
+        blocks: Optional Block Kit blocks for rich formatting
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    logger.info(f"Attempting to send DM to user: {user_id}")
+    
+    if not bot_token:
+        logger.error("No Slack bot token configured")
+        return False, "No Slack bot token configured"
+    if not user_id:
+        logger.error("No user ID provided")
+        return False, "No user ID provided"
+    
+    try:
+        client = WebClient(token=bot_token)
+        
+        # Open a DM conversation with the user (creates one if it doesn't exist)
+        response = client.conversations_open(users=[user_id])
+        dm_channel_id = response["channel"]["id"]
+        logger.debug(f"Opened DM channel: {dm_channel_id}")
+        
+        # Post the message to the DM channel
+        kwargs = {
+            "channel": dm_channel_id,
+            "text": message
+        }
+        if blocks:
+            kwargs["blocks"] = blocks
+        
+        client.chat_postMessage(**kwargs)
+        logger.info(f"DM sent successfully to user {user_id}")
+        return True, f"DM sent successfully to user {user_id}"
+    
+    except SlackApiError as e:
+        logger.error(f"Slack API error sending DM: {e.response['error']}")
+        return False, f"Slack API error: {e.response['error']}"
+    except Exception as e:
+        logger.exception(f"Error sending DM: {str(e)}")
+        return False, f"Error sending DM: {str(e)}"
 
-def load_config():
-    """Load configuration from config.json"""
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"slack_webhook_url": ""}
+
+def send_slack_channel_message(bot_token: str, channel: str, message: str, blocks: list = None) -> tuple[bool, str]:
+    """
+    Send a message to a public or private channel.
+    
+    Args:
+        bot_token: Slack bot token (xoxb-...)
+        channel: Channel name (e.g., #general) or channel ID (e.g., C123456789)
+        message: Plain text message (used as fallback for blocks)
+        blocks: Optional Block Kit blocks for rich formatting
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    logger.info(f"Attempting to send message to channel: {channel}")
+    
+    if not bot_token:
+        logger.error("No Slack bot token configured")
+        return False, "No Slack bot token configured"
+    if not channel:
+        logger.error("No channel provided")
+        return False, "No channel provided"
+    
+    # Remove # prefix if present
+    if channel.startswith("#"):
+        channel = channel[1:]
+    
+    try:
+        client = WebClient(token=bot_token)
+        
+        kwargs = {
+            "channel": channel,
+            "text": message
+        }
+        if blocks:
+            kwargs["blocks"] = blocks
+        
+        client.chat_postMessage(**kwargs)
+        logger.info(f"Message sent successfully to channel {channel}")
+        return True, f"Message sent successfully to channel {channel}"
+    
+    except SlackApiError as e:
+        logger.error(f"Slack API error sending to channel: {e.response['error']}")
+        return False, f"Slack API error: {e.response['error']}"
+    except Exception as e:
+        logger.exception(f"Error sending message to channel: {str(e)}")
+        return False, f"Error sending message: {str(e)}"
 
 
-def save_config(config):
-    """Save configuration to config.json"""
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
+def send_slack_message(bot_token: str, target: str, message: str, blocks: list = None, is_user: bool = False) -> tuple[bool, str]:
+    """
+    Unified function to send a message to either a user (DM) or a channel.
+    
+    Args:
+        bot_token: Slack bot token (xoxb-...)
+        target: Either a user ID (for DM) or channel name/ID (for channel message)
+        message: Plain text message (used as fallback for blocks)
+        blocks: Optional Block Kit blocks for rich formatting
+        is_user: If True, treat target as a user ID and send a DM
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    if is_user:
+        return send_slack_dm(bot_token, target, message, blocks)
+    else:
+        return send_slack_channel_message(bot_token, target, message, blocks)
 
 
 def get_data_files():
@@ -270,6 +466,7 @@ def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400
 
 def load_data(filepath):
     """Load and parse TSV data file"""
+    logger.info(f"Loading data file: {filepath}")
     try:
         import warnings
         # Suppress the header/data length mismatch warning - it's expected due to file format
@@ -299,8 +496,10 @@ def load_data(filepath):
             # Use just the time string for display
             df['time_str'] = df['heures']
         
+        logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns from {os.path.basename(filepath)}")
         return df
     except Exception as e:
+        logger.exception(f"Error loading data file {filepath}: {e}")
         st.error(f"Error loading data: {e}")
         return None
 
@@ -337,26 +536,22 @@ def calculate_daily_stats(df):
     return stats
 
 
-def send_slack_report(webhook_url, stats, filename):
-    """Send daily report to Slack"""
-    if not webhook_url:
-        return False, "No Slack webhook URL configured"
-    
-    # Build message
+def build_report_blocks(stats, filename):
+    """Build Slack Block Kit blocks for the daily report"""
     blocks = [
         {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": "Dspx-Monitor Daily Report",
-                "emoji": False
+                "text": "🌡️ Dspx-Monitor Daily Report",
+                "emoji": True
             }
         },
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Data file:* `{os.path.basename(filename)}`\n*Report time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                "text": f"*Data file:* `{os.path.basename(filename) if '/' in filename else filename}`\n*Report time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             }
         },
         {"type": "divider"}
@@ -364,37 +559,57 @@ def send_slack_report(webhook_url, stats, filename):
     
     # Add temperature stats
     for col, data in stats.items():
+        alias = TEMP_COLUMNS_ALIAS.get(col, col)
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"*{col}*\n"
-                    f"• Min: `{data['min']:.6f}`\n"
-                    f"• Max: `{data['max']:.6f}`\n"
+                    f"*{alias}*\n"
+                    f"• Min: `{data['min']:.4f}`\n"
+                    f"• Max: `{data['max']:.4f}`\n"
+                    f"• Current: `{data['current']:.4f}`\n"
                     f"• Avg rate of change: `{data['avg_rate_per_min']:.8f}` /min"
                 )
             }
         })
     
-    blocks.append({
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": "✅ All systems operating normally"
-        }
-    })
+    return blocks
+
+
+def build_report_text(stats, filename):
+    """Build plain text version of the daily report (for fallback/notifications)"""
+    lines = [
+        "🌡️ Dspx-Monitor Daily Report",
+        f"Data: {os.path.basename(filename) if '/' in filename else filename}",
+        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        ""
+    ]
     
-    payload = {"blocks": blocks}
+    for col, data in stats.items():
+        lines.append(f"{col}: Min={data['min']:.6f}, Max={data['max']:.6f}, Rate={data['avg_rate_per_min']:.8f}/min")
+        
+    return "\n".join(lines)
+
+
+def send_slack_report_sdk(bot_token: str, target: str, stats: dict, filename: str, is_user: bool = False) -> tuple[bool, str]:
+    """
+    Send daily report to Slack using the SDK (supports both channels and DMs).
     
-    try:
-        response = requests.post(webhook_url, json=payload, timeout=10)
-        if response.status_code == 200:
-            return True, "Report sent successfully"
-        else:
-            return False, f"Slack API error: {response.status_code}"
-    except Exception as e:
-        return False, f"Error sending report: {e}"
+    Args:
+        bot_token: Slack bot token
+        target: Channel name/ID or user ID
+        stats: Dictionary of statistics from calculate_daily_stats()
+        filename: Name of the data file or date range string
+        is_user: If True, send as a DM to the user
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    blocks = build_report_blocks(stats, filename)
+    text = build_report_text(stats, filename)
+    
+    return send_slack_message(bot_token, target, text, blocks, is_user)
 
 
 def render_valve_grid(df):
@@ -556,20 +771,21 @@ def main():
     # Note: st.set_page_config not available in Streamlit 0.62
     # Page will use default settings
     
+    logger.info("Dashboard main() function called")
+    
     st.title("Dspx-Monitor Dashboard")
     st.text("Cryogenic Dilution Refrigerator Monitoring System")
     
-    # Load config
-    config = load_config()
-    
     # Get available date range from files
     min_date, max_date = get_date_range_from_files()
+    logger.info(f"Available date range: {min_date} to {max_date}")
     
     # Sidebar
     st.sidebar.header("Settings")
     
     # Date range selection with calendar picker
     if min_date is None or max_date is None:
+        logger.warning("No data files found in data/ directory")
         st.sidebar.error("No data files found in data/ directory")
         return
     
@@ -592,59 +808,112 @@ def main():
     
     # Validate date range
     if start_date > end_date:
+        logger.warning(f"Invalid date range: {start_date} > {end_date}")
         st.sidebar.error("Start date must be before or equal to end date")
         return
     
     # Show how many files will be loaded
     files_to_load = get_files_for_date_range(start_date, end_date)
+    logger.info(f"Selected date range: {start_date} to {end_date}, {len(files_to_load)} files to load")
     st.sidebar.text(f"{len(files_to_load)} file(s) available in range")
     
     if st.sidebar.button("Refresh Data"):
+        logger.info("User requested data refresh")
         st.caching.clear_cache()
     
     st.sidebar.markdown("---")
     
     # Slack configuration
     st.sidebar.header("Slack Notifications")
-    webhook_url = st.sidebar.text_input(
-        "Webhook URL",
-        value=config.get("slack_webhook_url", ""),
-        type="password"
+    
+    # Check if bot token is available from environment or secrets file
+    bot_token = SECRETS.get("SLACK_BOT_TOKEN", "")
+    has_bot_token = bool(bot_token)
+    
+    if has_bot_token:
+        # Check if it came from environment or file
+        if os.environ.get("SLACK_BOT_TOKEN"):
+            st.sidebar.success("✓ Bot token configured (from environment variable)")
+        else:
+            st.sidebar.success("✓ Bot token configured (from slack.secret)")
+    else:
+        st.sidebar.warning("⚠ No bot token found. Set SLACK_BOT_TOKEN env var or add to slack.secret")
+    
+    # Message destination selection
+    st.sidebar.subheader("Send Report To")
+    send_method = st.sidebar.radio(
+        "Destination Type",
+        options=["Channel", "User (DM)"],
+        index=0
     )
     
-    # Save webhook URL if changed
-    if webhook_url != config.get("slack_webhook_url", ""):
-        config["slack_webhook_url"] = webhook_url
-        save_config(config)
-        st.sidebar.success("Webhook URL saved!")
+    if send_method == "Channel":
+        st.sidebar.text("Enter channel name (#general) or ID (C123456789)")
+        channel = st.sidebar.text_input(
+            "Channel Name or ID",
+            value=""
+        )
+        
+        if st.sidebar.button("Send to Channel"):
+            if not has_bot_token:
+                st.sidebar.error("Bot token not configured. Set SLACK_BOT_TOKEN env var or add to slack.secret")
+            elif not channel:
+                st.sidebar.error("Please enter a channel name or ID")
+            elif files_to_load:
+                df = load_multiple_data_files(files_to_load)
+                if df is not None:
+                    stats = calculate_daily_stats(df)
+                    date_range_str = f"{start_date} to {end_date}"
+                    success, message = send_slack_report_sdk(bot_token, channel, stats, date_range_str, is_user=False)
+                    if success:
+                        st.sidebar.success(message)
+                    else:
+                        st.sidebar.error(message)
+            else:
+                st.sidebar.error("No files available for selected date range")
     
-    if st.sidebar.button("Send Daily Report"):
-        if files_to_load:
-            df = load_multiple_data_files(files_to_load)
-            if df is not None:
-                stats = calculate_daily_stats(df)
-                date_range_str = f"{start_date} to {end_date}"
-                success, message = send_slack_report(webhook_url, stats, date_range_str)
-                if success:
-                    st.sidebar.success(message)
-                else:
-                    st.sidebar.error(message)
-        else:
-            st.sidebar.error("No files available for selected date range")
+    elif send_method == "User (DM)":
+        st.sidebar.text("Enter user ID (starts with U, e.g., U123456789)")
+        user_id = st.sidebar.text_input(
+            "User ID",
+            value=""
+        )
+        
+        if st.sidebar.button("Send DM to User"):
+            if not has_bot_token:
+                st.sidebar.error("Bot token not configured. Set SLACK_BOT_TOKEN env var or add to slack.secret")
+            elif not user_id:
+                st.sidebar.error("Please enter a user ID")
+            elif files_to_load:
+                df = load_multiple_data_files(files_to_load)
+                if df is not None:
+                    stats = calculate_daily_stats(df)
+                    date_range_str = f"{start_date} to {end_date}"
+                    success, message = send_slack_report_sdk(bot_token, user_id, stats, date_range_str, is_user=True)
+                    if success:
+                        st.sidebar.success(message)
+                    else:
+                        st.sidebar.error(message)
+            else:
+                st.sidebar.error("No files available for selected date range")
     
     # Load data for selected date range
     if not files_to_load:
+        logger.warning("No data files found for selected date range")
         st.error("No data files found for selected date range")
         return
     
+    logger.info(f"Loading {len(files_to_load)} data files for date range {start_date} to {end_date}")
     df = load_multiple_data_files(files_to_load)
     
     if df is None:
+        logger.error("Failed to load data files")
         st.error("Failed to load data files")
         return
     
     # Display info
     date_range_str = f"{start_date}" if start_date == end_date else f"{start_date} to {end_date}"
+    logger.info(f"Successfully loaded data: {len(df)} rows, {len(df.columns)} columns")
     st.info(f"Date Range: {date_range_str} | Files: {len(files_to_load)} | Rows: {len(df)} | Columns: {len(df.columns)}")
     
     # Determine which time column to use (datetime_str for multi-file, time_str for single)
@@ -827,4 +1096,7 @@ def main():
 
 
 if __name__ == "__main__":
+    logger.info("=" * 50)
+    logger.info("Dspx-Monitor Dashboard starting")
+    logger.info("=" * 50)
     main()
