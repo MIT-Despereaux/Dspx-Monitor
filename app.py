@@ -598,9 +598,9 @@ def main():
             else:
                 # Old signal, clear it
                 clear_refresh_signal()
-                refresh_interval_sec = 5  # 15 minutes
+                refresh_interval_sec = 900  # 15 minutes
         else:
-            refresh_interval_sec = 5  # 15 minutes
+            refresh_interval_sec = 900  # 15 minutes
         
         st.sidebar.text(f"Next refresh: {refresh_interval_sec}s")
         
