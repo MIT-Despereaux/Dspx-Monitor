@@ -594,37 +594,22 @@ def main():
                 # Clear the signal after reading
                 clear_refresh_signal()
                 # Use shorter refresh interval (30 seconds) to pick up changes quickly
-                refresh_interval = 30000  # 30 seconds in ms
+                refresh_interval_sec = 30
             else:
                 # Old signal, clear it
                 clear_refresh_signal()
-                refresh_interval = 5000  # in ms
+                refresh_interval_sec = 5  # 15 minutes
         else:
-            refresh_interval = 5000  # in ms
+            refresh_interval_sec = 5  # 15 minutes
         
-        st.sidebar.text(f"Next refresh: {refresh_interval // 1000}s")
+        st.sidebar.text(f"Next refresh: {refresh_interval_sec}s")
         
-        # JavaScript-based auto-refresh timer
-        # This injects a script that will reload the page after the specified interval
-        # The timer persists even when the user is not interacting with the page
-        auto_refresh_js = f"""
-        <script>
-            (function() {{
-                // Clear any existing timer
-                if (window.dspxRefreshTimer) {{
-                    clearTimeout(window.dspxRefreshTimer);
-                }}
-                // Set new timer for refresh
-                window.dspxRefreshTimer = setTimeout(function() {{
-                    window.location.reload();
-                }}, {refresh_interval});
-                
-                // Show countdown in console for debugging
-                console.log('Dspx-Monitor: Auto-refresh scheduled in {refresh_interval // 1000} seconds');
-            }})();
-        </script>
-        """
-        st.markdown(auto_refresh_js, unsafe_allow_html=True)
+        # Use HTML meta refresh tag - this works reliably across all browsers
+        # The meta refresh is placed in an iframe to avoid affecting the main page navigation
+        auto_refresh_html = f'''
+        <meta http-equiv="refresh" content="{refresh_interval_sec}">
+        '''
+        st.markdown(auto_refresh_html, unsafe_allow_html=True)
     else:
         # Custom date range mode
         st.sidebar.subheader("Date Range")
