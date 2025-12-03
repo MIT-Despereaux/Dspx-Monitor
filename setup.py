@@ -21,7 +21,8 @@ setup(
         "requests>=2.25.0",
         "plotly>=5.0.0",
         "protobuf<=3.20",
-        "slack_bolt",
+        "slack_sdk>=3.0.0",
+        "schedule>=1.0.0",  # For background scheduler
     ],
     extras_require={
         "dev": [
