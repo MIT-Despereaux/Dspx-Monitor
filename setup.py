@@ -7,7 +7,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="dspx-monitor",
-    version="1.0.0",
+    version="0.1.0",
     description="Cryogenic Dilution Refrigerator Monitoring Dashboard",
     author="MIT-Despereaux",
     py_modules=["app"],  # Single module, not a package
