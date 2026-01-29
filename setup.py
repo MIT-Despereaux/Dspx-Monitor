@@ -7,15 +7,15 @@ from setuptools import setup, find_packages
 
 setup(
     name="dspx-monitor",
-    version="1.0.0",
+    version="2.0.0",
     description="Cryogenic Dilution Refrigerator Monitoring Dashboard",
     author="MIT-Despereaux",
-    python_requires=">=3.8,<3.9",
+    python_requires=">=3.13",
     install_requires=[
-        "streamlit==1.22.0",
-        "pandas>=1.3.0,<2.0.0",
-        "requests>=2.25.0",
-        "plotly>=5.0.0",
+        "streamlit",
+        "pandas",
+        "requests",
+        "plotly",
     ],
     extras_require={
         "dev": [
