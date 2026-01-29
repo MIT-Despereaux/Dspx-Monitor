@@ -541,7 +541,7 @@ def render_fridge_diagram(df):
     modified_svg = svg_content.replace("</svg>", overlay_group + "</svg>")
     
     # Display the SVG in a container with controlled size
-    html_content = '<div style="display: flex; justify-content: center; max-width: 800px; margin: 0 auto; padding: 10px; border-radius: 8px;">' + modified_svg + '</div>'
+    html_content = '<div style="display: flex; justify-content: center; max-width: 600px; margin: 0 auto; padding: 10px; border-radius: 8px;">' + modified_svg + '</div>'
     st.markdown(html_content, unsafe_allow_html=True)
     
     # Add a legend
