@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import streamlit as st
+from streamlit import fragment
 import plotly.graph_objects as go
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -17,10 +18,8 @@ from slack_sdk.errors import SlackApiError
 # Import shared core module
 from core import (
     LOG_DIR,
-    DATA_DIR,
     ASSETS_DIR,
     TEMP_COLUMNS,
-    TEMP_COLUMNS_ALIAS,
     PRESSURE_COLUMNS,
     PRESSURE_K_COLUMNS,
     TURBO_COLUMN,
@@ -33,14 +32,10 @@ from core import (
     load_secrets,
     read_refresh_signal,
     clear_refresh_signal,
-    # Data processing functions
     get_date_range_from_files,
     get_files_for_date_range,
-    get_files_for_last_24_hours,
-    get_file_modification_times,
     load_data_file,
     load_multiple_files,
-    filter_to_last_24_hours,
     calculate_daily_stats,
     build_report_blocks,
     build_report_text,
@@ -99,8 +94,6 @@ if not _has_handlers:
 SECRETS = load_secrets()
 for key in SECRETS:
     logger.info(f"Loaded {key}")
-
-# DATA_DIR, ASSETS_DIR, and column definitions are now imported from core.py
 
 
 def display_metric(label, value):
@@ -225,12 +218,7 @@ def send_slack_message(bot_token: str, target: str, message: str, blocks: list =
         return send_slack_channel_message(bot_token, target, message, blocks)
 
 
-# Data file functions (get_data_files, get_date_range_from_files, get_files_for_date_range,
-# get_files_for_last_24_hours, filter_to_last_24_hours, get_file_modification_times)
-# are now imported from core.py
-
-
-@st.cache(ttl=300, show_spinner=False, allow_output_mutation=True)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_single_file_cached(filepath):
     """Load a single data file with caching"""
     return load_data_file(filepath, logger)
@@ -353,15 +341,6 @@ def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400
     return fig
 
 
-# load_data function replaced by load_data_file from core.py
-
-
-# calculate_daily_stats function is now imported from core.py
-
-
-# build_report_blocks and build_report_text functions are now imported from core.py
-
-
 def send_slack_report_sdk(bot_token: str, target: str, stats: dict, filename: str, is_user: bool = False) -> tuple[bool, str]:
     """
     Send daily report to Slack using the SDK (supports both channels and DMs).
@@ -435,7 +414,7 @@ def render_valve_timeline(df):
     # Create interactive Plotly chart for valves
     fig = go.Figure()
     
-    for i, col in enumerate(valve_cols):
+    for col in valve_cols:
         if col in valve_df.columns:
             y_values = pd.to_numeric(valve_df[col], errors="coerce").tolist()
             # Only show VE1 by default, hide others (click legend to show)
@@ -681,6 +660,34 @@ def main():
                         st.sidebar.error(message)
             else:
                 st.sidebar.error("No files available for selected date range")
+    
+    # Call the fragment to display data and charts
+    # This fragment can be re-run independently without rerunning the whole page
+    display_data_and_charts(files_to_load, start_date, end_date)
+
+
+@fragment(run_every="10s")
+def display_data_and_charts(files_to_load, start_date, end_date):
+    """Fragment that displays data and charts. Can be re-run independently.
+    
+    Checks for refresh signals every 10 seconds and automatically
+    updates when new data is detected via the .refresh_signal file.
+    """
+    # Check for refresh signal file (scheduler writes this when data files are updated)
+    signal_timestamp = read_refresh_signal()
+    if signal_timestamp is not None:
+        # Initialize last processed timestamp if not set
+        if 'last_processed_signal' not in st.session_state:
+            st.session_state['last_processed_signal'] = 0
+        
+        last_processed = st.session_state['last_processed_signal']
+        
+        if signal_timestamp > last_processed:
+            logger.info(f"Fragment detected refresh signal (timestamp: {signal_timestamp}), clearing cache")
+            st.cache_data.clear()
+            st.session_state['last_processed_signal'] = signal_timestamp
+            clear_refresh_signal()
+            st.info("📡 Data files updated - refreshing charts...")
     
     # Load data for selected date range
     if not files_to_load:

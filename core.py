@@ -424,7 +424,7 @@ def send_slack_message(
         if logger:
             logger.info(f"Message sent to {'user ' + target if is_dm else 'channel ' + target}")
         
-        return True, f"Message sent successfully"
+        return True, "Message sent successfully"
     
     except SlackApiError as e:
         error_msg = f"Slack API error: {e.response['error']}"
@@ -460,7 +460,7 @@ def send_daily_report(
 def write_refresh_signal():
     """Write a signal file to indicate data has been updated."""
     try:
-        with open(SIGNAL_FILE, 'w') as f:
+        with open(SIGNAL_FILE, 'w', encoding='utf-8') as f:
             f.write(str(datetime.now().timestamp()))
     except Exception:
         pass
@@ -470,7 +470,7 @@ def read_refresh_signal() -> Optional[float]:
     """Read the refresh signal timestamp. Returns None if no signal."""
     try:
         if os.path.exists(SIGNAL_FILE):
-            with open(SIGNAL_FILE, 'r') as f:
+            with open(SIGNAL_FILE, 'r', encoding='utf-8') as f:
                 return float(f.read().strip())
     except Exception:
         pass
