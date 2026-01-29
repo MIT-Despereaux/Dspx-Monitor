@@ -141,7 +141,7 @@ def get_files_for_date_range(start_date, end_date):
     return files
 
 
-@st.cache(ttl=300, show_spinner=False, allow_output_mutation=True)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_single_file_cached(filepath):
     """Load a single data file with caching"""
     return load_data(filepath)
@@ -489,7 +489,7 @@ def render_valve_timeline(df):
     fig.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikedash="dot", spikemode="across")
     fig.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikedash="dot", spikemode="across")
     
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+    st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
 
 def render_fridge_diagram(df):
     """Render the fridge diagram with valve status overlays"""
@@ -542,9 +542,8 @@ def render_fridge_diagram(df):
     overlay_group = '<g id="valve-overlays">' + ''.join(valve_overlays) + '</g>'
     modified_svg = svg_content.replace("</svg>", overlay_group + "</svg>")
     
-    # Display the SVG in a container with controlled size
-    html_content = '<div style="display: flex; justify-content: center; max-width: 600px; margin: 0 auto; padding: 10px; border-radius: 8px;">' + modified_svg + '</div>'
-    st.markdown(html_content, unsafe_allow_html=True)
+    # Display the SVG using Streamlit's image function
+    st.image(modified_svg, width=400)
     
     # Add a legend
     st.write("🟢 Open | 🔴 Closed | ⚫ Unknown")
@@ -598,7 +597,7 @@ def main():
     st.sidebar.text(f"📁 {len(files_to_load)} file(s) available in range")
     
     if st.sidebar.button("🔄 Refresh Data"):
-        st.caching.clear_cache()
+        st.cache_data.clear()
     
     st.sidebar.markdown("---")
     
@@ -669,7 +668,7 @@ def main():
         temp_df = df[[time_col] + temp_cols].copy()
         temp_df = downsample_for_chart(temp_df)
         fig = create_interactive_chart(temp_df, time_col, temp_cols, y_label="Temperature (K)", log_scale=temp_log)
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+        st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pressure Section
     st.header("📊 Pressure (mbar)")
@@ -687,7 +686,7 @@ def main():
             pressure_df = df[[time_col] + pressure_cols_available].copy()
             pressure_df = downsample_for_chart(pressure_df)
             fig = create_interactive_chart(pressure_df, time_col, pressure_cols_available, y_label="Pressure (mbar)", log_scale=pressure_log)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pressure K Section (K3, K4, K5, K6, K8)
     st.header("📊 Pressure Sensors (K3-K8)")
@@ -705,7 +704,7 @@ def main():
             pressure_k_df = df[[time_col] + pressure_k_cols_available].copy()
             pressure_k_df = downsample_for_chart(pressure_k_df)
             fig = create_interactive_chart(pressure_k_df, time_col, pressure_k_cols_available, y_label="Pressure", log_scale=pressure_k_log)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Turbo Speed Section
     st.header("🔄 Turbo Pump Speed (%)")
@@ -720,7 +719,7 @@ def main():
             turbo_df = df[[time_col, TURBO_COLUMN]].copy()
             turbo_df = downsample_for_chart(turbo_df)
             fig = create_interactive_chart(turbo_df, time_col, [TURBO_COLUMN], y_label="Speed (%)", log_scale=False)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Resistance Section
     st.header("⚡ Resistance MMR1 (Ω)")
@@ -738,7 +737,7 @@ def main():
             resistance_df = df[[time_col] + resistance_cols_available].copy()
             resistance_df = downsample_for_chart(resistance_df)
             fig = create_interactive_chart(resistance_df, time_col, resistance_cols_available, y_label="Resistance (Ω)", log_scale=resistance_log)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Mixture Percentage Section (P/T)
     st.header("🧪 Mixture Percentage (P/T)")
@@ -753,7 +752,7 @@ def main():
             mixture_df = df[[time_col, MIXTURE_COLUMN]].copy()
             mixture_df = downsample_for_chart(mixture_df)
             fig = create_interactive_chart(mixture_df, time_col, [MIXTURE_COLUMN], y_label="Mixture (%)", log_scale=False)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # OVC Turbo Status Section (Turbo AUX)
     st.header("🔄 OVC Turbo Status (Turbo AUX)")
@@ -769,7 +768,7 @@ def main():
             turbo_aux_df = df[[time_col, TURBO_AUX_COLUMN]].copy()
             turbo_aux_df = downsample_for_chart(turbo_aux_df)
             fig = create_interactive_chart(turbo_aux_df, time_col, [TURBO_AUX_COLUMN], y_label="Status (0=Off, 1=On)", log_scale=False)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pulse Tube Status Section (PT)
     st.header("❄️ Pulse Tube Status (PT)")
@@ -785,7 +784,7 @@ def main():
             pt_df = df[[time_col, PULSE_TUBE_COLUMN]].copy()
             pt_df = downsample_for_chart(pt_df)
             fig = create_interactive_chart(pt_df, time_col, [PULSE_TUBE_COLUMN], y_label="Status (0=Off, 1=On)", log_scale=False)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Valve Status Section
     st.header("🔧 Valve Status")
