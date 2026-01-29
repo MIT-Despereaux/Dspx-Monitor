@@ -11,11 +11,14 @@ setup(
     description="Cryogenic Dilution Refrigerator Monitoring Dashboard",
     author="MIT-Despereaux",
     python_requires=">=3.13",
+    py_modules=["app"],
     install_requires=[
         "streamlit",
         "pandas",
         "requests",
         "plotly",
+        "protobuf",
+        "slack_bolt",
     ],
     extras_require={
         "dev": [

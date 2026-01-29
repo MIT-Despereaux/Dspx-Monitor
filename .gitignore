@@ -129,5 +129,9 @@ data*/
 data*
 
 # TOKEN files
-*.secret
-*.token
+*.secret*
+*.token*
+
+# Logs
+logs/
+*.log
