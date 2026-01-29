@@ -12,13 +12,15 @@ setup(
     author="MIT-Despereaux",
     python_requires=">=3.13",
     py_modules=["app"],
+    packages=[],
     install_requires=[
         "streamlit",
         "pandas",
         "requests",
         "plotly",
         "protobuf",
-        "slack_bolt",
+        "slack_sdk",
+        "schedule",
     ],
     extras_require={
         "dev": [

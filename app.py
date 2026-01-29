@@ -14,8 +14,39 @@ import plotly.graph_objects as go
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-# Setup logging
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+# Import shared core module
+from core import (
+    LOG_DIR,
+    DATA_DIR,
+    ASSETS_DIR,
+    TEMP_COLUMNS,
+    TEMP_COLUMNS_ALIAS,
+    PRESSURE_COLUMNS,
+    PRESSURE_K_COLUMNS,
+    TURBO_COLUMN,
+    RESISTANCE_COLUMNS,
+    MIXTURE_COLUMN,
+    TURBO_AUX_COLUMN,
+    PULSE_TUBE_COLUMN,
+    VALVE_POSITIONS,
+    VALVE_COLUMNS,
+    load_secrets,
+    read_refresh_signal,
+    clear_refresh_signal,
+    # Data processing functions
+    get_date_range_from_files,
+    get_files_for_date_range,
+    get_files_for_last_24_hours,
+    get_file_modification_times,
+    load_data_file,
+    load_multiple_files,
+    filter_to_last_24_hours,
+    calculate_daily_stats,
+    build_report_blocks,
+    build_report_text,
+)
+
+# Setup logging - use LOG_DIR from core module
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # Create a unique log file for each app run with timestamp
@@ -60,92 +91,16 @@ if not _has_handlers:
     
     # Initial startup messages
     print("=== Dspx-Monitor Application Started ===")
+    print(f"Log file: {LOG_FILEPATH}")
     logger.info("=== Dspx-Monitor Application Started ===")
     logger.info(f"Log file: {LOG_FILEPATH}")
 
-# Load secrets: First check OS environment variables, then fall back to slack.secret file
-SECRETS = {}
+# Load secrets using core module (env vars take precedence over slack.secret file)
+SECRETS = load_secrets()
+for key in SECRETS:
+    logger.info(f"Loaded {key}")
 
-# Define the secret keys we're looking for
-SECRET_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_SIGNING_SECRET"]
-
-# First, try to get from OS environment variables
-for key in SECRET_KEYS:
-    env_value = os.environ.get(key)
-    if env_value:
-        SECRETS[key] = env_value
-        logger.info(f"Loaded {key} from environment variable")
-
-# Then, read from slack.secret file for any keys not already set from env
-if os.path.exists("slack.secret"):
-    logger.info("Reading secrets from slack.secret file")
-    with open("slack.secret", "r", encoding="utf-8") as f:
-        lines = f.readlines()
-        if lines:
-            for line in lines:
-                # ignore lines starting with #
-                if line.strip().startswith('#'):
-                    continue
-                key_value = line.strip().split('=', 1)
-                if len(key_value) == 2:
-                    key = key_value[0].strip()
-                    value = key_value[1].strip()
-                    # Only use file value if not already set from environment
-                    if key not in SECRETS:
-                        SECRETS[key] = value
-                        logger.info(f"Loaded {key} from slack.secret file")
-else:
-    logger.warning("slack.secret file not found")
-
-# Configuration
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-# CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
-
-# Column definitions with units
-TEMP_COLUMNS = ["full range", "still", "Platine 4K"]  # Units: K (Kelvin)
-TEMP_COLUMNS_ALIAS = {
-    "full range": "Full Range (K)",
-    "still": "Still (K)",
-    "Platine 4K": "Platine 4K (K)"
-}
-PRESSURE_COLUMNS = ["P1", "P2", "P3"]  # Units: mbar
-PRESSURE_K_COLUMNS = ["K3", "K4", "K5", "K6", "K8"]  # Additional pressure sensors
-TURBO_COLUMN = "Pumping turbo speed"  # Units: %
-RESISTANCE_COLUMNS = ["R MMR1 1", "R MMR1 2", "R MMR1 3"]  # Units: Ohm
-MIXTURE_COLUMN = "P/T"  # Mixture percentage
-TURBO_AUX_COLUMN = "Turbo AUX"  # OVC turbo status (On/Off)
-PULSE_TUBE_COLUMN = "PT"  # Pulse tube status (On/Off)
-
-# Valve positions for the fridge diagram (x, y coordinates in SVG viewBox units)
-# These positions need to be calibrated to match the actual diagram
-# Format: {valve_name: (x, y)}
-VALVE_POSITIONS = {
-    "VE1": (698, 135),
-    "VE2": (698, 798),
-    "VE3": (698, 1319),
-    "VE5": (71, 1319),
-    "VE6": (71, 798),
-    "VE7": (71, 135),
-    "VE8": (793, 798),
-    "VE9": (561, 1320),
-    "VE12": (346, 1126),
-    "VE13": (257, 798),
-    "VE14": (380, 798),
-    "VE16": (258, 1319),
-    "VE17": (166, 694),
-    "VE22": (254, 135),
-    "VE23": (877, 187),
-    "VE26": (605, 1126),
-    "VE27": (399, 1320),
-    "VE28": (967, 1320),
-    "VE30": (322, 562),
-    "VE31": (456, 350),
-    "VE32": (614, 560),
-    "VE33": (877, 694),
-    "VE37": (611, 97),
-}
-VALVE_COLUMNS = list(VALVE_POSITIONS.keys())
+# DATA_DIR, ASSETS_DIR, and column definitions are now imported from core.py
 
 
 def display_metric(label, value):
@@ -270,75 +225,15 @@ def send_slack_message(bot_token: str, target: str, message: str, blocks: list =
         return send_slack_channel_message(bot_token, target, message, blocks)
 
 
-def get_data_files():
-    """Get list of data files sorted by date (newest first)"""
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
-    if not os.path.exists(data_dir):
-        return []
-    
-    # Get all .txt files but exclude subdirectories (like Old)
-    files = []
-    for f in os.listdir(data_dir):
-        filepath = os.path.join(data_dir, f)
-        if f.endswith(".txt") and os.path.isfile(filepath):
-            files.append(filepath)
-    
-    # Sort by date in filename (MMDDYY format)
-    def parse_date(filename):
-        base = os.path.basename(filename).replace(".txt", "")
-        try:
-            return datetime.strptime(base, "%m%d%y")
-        except ValueError:
-            return datetime.min
-    
-    files.sort(key=parse_date, reverse=True)
-    return files
+# Data file functions (get_data_files, get_date_range_from_files, get_files_for_date_range,
+# get_files_for_last_24_hours, filter_to_last_24_hours, get_file_modification_times)
+# are now imported from core.py
 
 
-def get_date_range_from_files():
-    """Get min and max dates from available data files"""
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
-    if not os.path.exists(data_dir):
-        return None, None
-    
-    dates = []
-    for f in os.listdir(data_dir):
-        if f.endswith(".txt"):
-            base = f.replace(".txt", "")
-            try:
-                d = datetime.strptime(base, "%m%d%y").date()
-                dates.append(d)
-            except ValueError:
-                pass
-    
-    if not dates:
-        return None, None
-    
-    return min(dates), max(dates)
-
-
-def get_files_for_date_range(start_date, end_date):
-    """Get list of files for the specified date range"""
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
-    if not os.path.exists(data_dir):
-        return []
-    
-    files = []
-    current = start_date
-    while current <= end_date:
-        filename = current.strftime("%m%d%y") + ".txt"
-        filepath = os.path.join(data_dir, filename)
-        if os.path.exists(filepath):
-            files.append(filepath)
-        current += timedelta(days=1)
-    
-    return files
-
-
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache(ttl=300, show_spinner=False, allow_output_mutation=True)
 def load_single_file_cached(filepath):
     """Load a single data file with caching"""
-    return load_data(filepath)
+    return load_data_file(filepath, logger)
 
 
 def load_multiple_data_files(filepaths, show_progress=True):
@@ -346,22 +241,22 @@ def load_multiple_data_files(filepaths, show_progress=True):
     if not filepaths:
         return None
     
-    all_dfs = []
+    # For single file or no progress needed, use core.py function directly
+    if not show_progress or len(filepaths) == 1:
+        return load_multiple_files(filepaths, logger)
     
     # Show progress bar for multiple files
-    if show_progress and len(filepaths) > 1:
-        progress_bar = st.progress(0)
-    else:
-        progress_bar = None
+    all_dfs = []
+    progress_bar = st.progress(0)
     
     for i, filepath in enumerate(filepaths):
         df = load_single_file_cached(filepath)
         if df is not None:
-            # Add date column from filename
+            # Add date column from filename for multi-file views
             base = os.path.basename(filepath).replace(".txt", "")
             try:
                 file_date = datetime.strptime(base, "%m%d%y").strftime("%Y-%m-%d")
-                df = df.copy()  # Avoid modifying cached data
+                df = df.copy()
                 df['file_date'] = file_date
                 # Create combined datetime string for x-axis
                 if 'time_str' in df.columns:
@@ -374,18 +269,15 @@ def load_multiple_data_files(filepaths, show_progress=True):
             all_dfs.append(df)
         
         # Update progress
-        if progress_bar is not None:
-            progress_bar.progress((i + 1) / len(filepaths))
+        progress_bar.progress((i + 1) / len(filepaths))
     
     # Clear progress bar
-    if progress_bar is not None:
-        progress_bar.empty()
+    progress_bar.empty()
     
     if not all_dfs:
         return None
     
-    combined = pd.concat(all_dfs, ignore_index=True)
-    return combined
+    return pd.concat(all_dfs, ignore_index=True)
 
 
 def downsample_for_chart(df, max_points=2000):
@@ -461,132 +353,13 @@ def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400
     return fig
 
 
-def load_data(filepath):
-    """Load and parse TSV data file"""
-    logger.info(f"Loading data file: {filepath}")
-    try:
-        import warnings
-        # Suppress the header/data length mismatch warning - it's expected due to file format
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            # Only load columns we need for faster parsing
-            df = pd.read_csv(
-                filepath, 
-                sep="\t", 
-                encoding="latin-1",
-                index_col=False,
-                on_bad_lines='skip',
-                low_memory=False
-            )
-        
-        # Clean column names (remove extra spaces and carriage returns)
-        df.columns = df.columns.str.strip().str.replace('\r', '')
-        
-        # Also clean string data
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                df[col] = df[col].astype(str).str.strip().str.replace('\r', '')
-        
-        # Parse the heures (time) column for x-axis labeling
-        if 'heures' in df.columns:
-            df['time'] = pd.to_datetime(df['heures'], format='%H:%M:%S', errors='coerce')
-            # Use just the time string for display
-            df['time_str'] = df['heures']
-        
-        logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns from {os.path.basename(filepath)}")
-        return df
-    except Exception as e:
-        logger.exception(f"Error loading data file {filepath}: {e}")
-        st.error(f"Error loading data: {e}")
-        return None
+# load_data function replaced by load_data_file from core.py
 
 
-def calculate_daily_stats(df):
-    """Calculate daily statistics for temperature columns"""
-    stats = {}
-    
-    for col in TEMP_COLUMNS:
-        if col in df.columns:
-            # Convert to numeric, coercing errors
-            values = pd.to_numeric(df[col], errors="coerce")
-            
-            stats[col] = {
-                "min": values.min(),
-                "max": values.max(),
-                "mean": values.mean(),
-                "current": values.iloc[-1] if len(values) > 0 else None,
-            }
-            
-            # Calculate rate of change per 15 minutes
-            # Data is sampled every 30 seconds, so 15 min = 30 samples
-            samples_per_15min = 30
-            if len(values) >= samples_per_15min:
-                rates = []
-                for i in range(0, len(values) - samples_per_15min, samples_per_15min):
-                    rate = (values.iloc[i + samples_per_15min] - values.iloc[i]) / 15.0  # per minute
-                    if pd.notna(rate):
-                        rates.append(rate)
-                stats[col]["avg_rate_per_min"] = sum(rates) / len(rates) if rates else 0
-            else:
-                stats[col]["avg_rate_per_min"] = 0
-    
-    return stats
+# calculate_daily_stats function is now imported from core.py
 
 
-def build_report_blocks(stats, filename):
-    """Build Slack Block Kit blocks for the daily report"""
-    blocks = [
-        {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "🌡️ Dspx-Monitor Daily Report",
-                "emoji": True
-            }
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Data file:* `{os.path.basename(filename) if '/' in filename else filename}`\n*Report time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            }
-        },
-        {"type": "divider"}
-    ]
-    
-    # Add temperature stats
-    for col, data in stats.items():
-        alias = TEMP_COLUMNS_ALIAS.get(col, col)
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*{alias}*\n"
-                    f"• Min: `{data['min']:.4f}`\n"
-                    f"• Max: `{data['max']:.4f}`\n"
-                    f"• Current: `{data['current']:.4f}`\n"
-                    f"• Avg rate of change: `{data['avg_rate_per_min']:.8f}` /min"
-                )
-            }
-        })
-    
-    return blocks
-
-
-def build_report_text(stats, filename):
-    """Build plain text version of the daily report (for fallback/notifications)"""
-    lines = [
-        "🌡️ Dspx-Monitor Daily Report",
-        f"Data: {os.path.basename(filename) if '/' in filename else filename}",
-        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        ""
-    ]
-    
-    for col, data in stats.items():
-        lines.append(f"{col}: Min={data['min']:.6f}, Max={data['max']:.6f}, Rate={data['avg_rate_per_min']:.8f}/min")
-        
-    return "\n".join(lines)
+# build_report_blocks and build_report_text functions are now imported from core.py
 
 
 def send_slack_report_sdk(bot_token: str, target: str, stats: dict, filename: str, is_user: bool = False) -> tuple[bool, str]:
@@ -766,7 +539,9 @@ def main():
     # Note: st.set_page_config not available in Streamlit 0.62
     # Page will use default settings
     
-    st.title("🧊 Dspx-Monitor Dashboard")
+    logger.info("Dashboard main() function called")
+    
+    st.title("Dspx-Monitor Dashboard")
     st.text("Cryogenic Dilution Refrigerator Monitoring System")
     
     # Get available date range from files
@@ -1069,7 +844,7 @@ def main():
             st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Valve Status Section
-    st.header("🔧 Valve Status")
+    st.header("Valve Status")
     
     # Current state grid
     st.subheader("Current State")
