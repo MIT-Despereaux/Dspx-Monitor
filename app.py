@@ -784,31 +784,48 @@ def main():
     
     st.sidebar.subheader("📅 Date Range")
     
-    # Date picker for start and end dates
-    start_date = st.sidebar.date_input(
+    # Initialize session state for active dates if not present
+    if 'active_start_date' not in st.session_state:
+        st.session_state.active_start_date = max_date
+    if 'active_end_date' not in st.session_state:
+        st.session_state.active_end_date = max_date
+    
+    # Date picker for start and end dates (these are temporary until button is clicked)
+    temp_start_date = st.sidebar.date_input(
         "Start Date",
-        value=max_date,  # Default to most recent date
+        value=st.session_state.active_start_date,
         min_value=min_date,
-        max_value=max_date
+        max_value=max_date,
+        key="temp_start_date"
     )
     
-    end_date = st.sidebar.date_input(
+    temp_end_date = st.sidebar.date_input(
         "End Date",
-        value=max_date,  # Default to most recent date
+        value=st.session_state.active_end_date,
         min_value=min_date,
-        max_value=max_date
+        max_value=max_date,
+        key="temp_end_date"
     )
     
-    # Validate date range
-    if start_date > end_date:
-        logger.warning(f"Invalid date range: {start_date} > {end_date}")
-        st.sidebar.error("Start date must be before or equal to end date")
-        return
+    # Button to apply date range
+    if st.sidebar.button("📅 Load Date Range"):
+        # Validate date range
+        if temp_start_date > temp_end_date:
+            st.sidebar.error("Start date must be before or equal to end date")
+        else:
+            # Update active dates
+            st.session_state.active_start_date = temp_start_date
+            st.session_state.active_end_date = temp_end_date
+            logger.info(f"Date range updated: {temp_start_date} to {temp_end_date}")
+    
+    # Use the active dates for data loading
+    start_date = st.session_state.active_start_date
+    end_date = st.session_state.active_end_date
     
     # Show how many files will be loaded
     files_to_load = get_files_for_date_range(start_date, end_date)
-    logger.info(f"Selected date range: {start_date} to {end_date}, {len(files_to_load)} files to load")
-    st.sidebar.text(f"{len(files_to_load)} file(s) available in range")
+    logger.info(f"Active date range: {start_date} to {end_date}, {len(files_to_load)} files to load")
+    st.sidebar.text(f"📁 {len(files_to_load)} file(s) in active range")
     
     if st.sidebar.button("🔄 Refresh Data"):
         logger.info("User requested data refresh")
