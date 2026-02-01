@@ -36,7 +36,7 @@ from core import (
     get_files_for_date_range,
     load_data_file,
     load_multiple_files,
-    calculate_daily_stats,
+    calculate_stats,
     build_report_blocks,
     build_report_text,
 )
@@ -56,7 +56,8 @@ LOG_FILEPATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
 # Configure logging with explicit handler setup
 logger = logging.getLogger("dspx_monitor")
-logger.setLevel(logging.INFO)
+logging_level = logging.INFO
+logger.setLevel(logging_level)
 
 # Prevent duplicate handlers by checking if we already have a file handler for this path
 _has_handlers = False
@@ -71,13 +72,13 @@ if not _has_handlers:
     
     # File handler
     file_handler = logging.FileHandler(LOG_FILEPATH, encoding='utf-8')
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging_level)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(file_handler)
     
     # Console handler
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging_level)
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(console_handler)
     
@@ -198,7 +199,7 @@ def display_metric(label: str, value: str):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_single_file_cached(filepath):
+def load_data_file_cached(filepath):
     """Load a single data file with caching"""
     return load_data_file(filepath, logger)
 
@@ -217,7 +218,7 @@ def load_multiple_data_files(filepaths, show_progress=True):
     progress_bar = st.progress(0)
     
     for i, filepath in enumerate(filepaths):
-        df = load_single_file_cached(filepath)
+        df = load_data_file_cached(filepath)
         if df is not None:
             # Add date column from filename for multi-file views
             base = os.path.basename(filepath).replace(".txt", "")
@@ -487,8 +488,10 @@ def render_fridge_diagram(df):
     overlay_group = '<g id="valve-overlays">' + ''.join(valve_overlays) + '</g>'
     modified_svg = svg_content.replace("</svg>", overlay_group + "</svg>")
     
-    # Display the SVG using Streamlit's image function
-    st.image(modified_svg, width=400)
+    # Display the SVG centered on the page
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.image(modified_svg, width=400)
     
     # Add a legend
     st.write("🟢 Open | 🔴 Closed | ⚫ Unknown")
@@ -602,7 +605,7 @@ def main():
             elif files_to_load:
                 df = load_multiple_data_files(files_to_load)
                 if df is not None:
-                    stats = calculate_daily_stats(df)
+                    stats = calculate_stats(df)
                     date_range_str = f"{start_date} to {end_date}"
                     success, message = send_slack_report(bot_token, channel, stats, date_range_str, False)
                     if success:
@@ -627,7 +630,7 @@ def main():
             elif files_to_load:
                 df = load_multiple_data_files(files_to_load)
                 if df is not None:
-                    stats = calculate_daily_stats(df)
+                    stats = calculate_stats(df)
                     date_range_str = f"{start_date} to {end_date}"
                     success, message = send_slack_report(bot_token, user_id, stats, date_range_str, True)
                     if success:

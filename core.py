@@ -283,10 +283,11 @@ def filter_to_last_24_hours(df: pd.DataFrame, logger: Optional[logging.Logger] =
 # Statistics Functions
 # ============================================================================
 
-def calculate_daily_stats(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-    """Calculate daily statistics for temperature columns."""
+def calculate_stats(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """Calculate statistics for temperature and pressure columns for the entire dataset."""
     stats = {}
     
+    # Temperature columns with rate calculation
     for col in TEMP_COLUMNS:
         if col in df.columns:
             values = pd.to_numeric(df[col], errors="coerce")
@@ -296,6 +297,7 @@ def calculate_daily_stats(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
                 "max": values.max(),
                 "mean": values.mean(),
                 "current": values.iloc[-1] if len(values) > 0 else None,
+                "type": "temperature"
             }
             
             # Calculate rate of change per 15 minutes
@@ -309,6 +311,30 @@ def calculate_daily_stats(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
                 stats[col]["avg_rate_per_min"] = sum(rates) / len(rates) if rates else 0
             else:
                 stats[col]["avg_rate_per_min"] = 0
+    
+    # Pressure columns (P1, P2, P3)
+    pressure_cols = ["P1", "P2", "P3"]
+    for col in pressure_cols:
+        if col in df.columns:
+            values = pd.to_numeric(df[col], errors="coerce")
+            stats[col] = {
+                "min": values.min(),
+                "max": values.max(),
+                "mean": values.mean(),
+                "current": values.iloc[-1] if len(values) > 0 else None,
+                "type": "pressure"
+            }
+    
+    # K5 pressure (injection pressure)
+    if "K5" in df.columns:
+        values = pd.to_numeric(df["K5"], errors="coerce")
+        stats["K5"] = {
+            "min": values.min(),
+            "max": values.max(),
+            "mean": values.mean(),
+            "current": values.iloc[-1] if len(values) > 0 else None,
+            "type": "pressure"
+        }
     
     return stats
 
@@ -338,22 +364,49 @@ def build_report_blocks(stats: Dict[str, Dict], filename: str) -> List[Dict]:
         {"type": "divider"}
     ]
     
+    # Add temperature readings
     for col, data in stats.items():
-        alias = TEMP_COLUMNS_ALIAS.get(col, col)
-        current_val = f"{data['current']:.4f}" if data.get('current') is not None else "N/A"
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*{alias}*\n"
-                    f"• Min: `{data['min']:.4f}`\n"
-                    f"• Max: `{data['max']:.4f}`\n"
-                    f"• Current: `{current_val}`\n"
-                    f"• Avg rate: `{data.get('avg_rate_per_min', 0):.8f}` /min"
-                )
-            }
-        })
+        if data.get('type') == 'temperature':
+            alias = TEMP_COLUMNS_ALIAS.get(col, col)
+            current_val = f"{data['current']:.4f}" if data.get('current') is not None else "N/A"
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*{alias}*\n"
+                        f"• Min: `{data['min']:.4f}`\n"
+                        f"• Max: `{data['max']:.4f}`\n"
+                        f"• Current: `{current_val}`\n"
+                        f"• Avg rate: `{data.get('avg_rate_per_min', 0):.8f}` /min"
+                    )
+                }
+            })
+    
+    # Add pressure readings
+    pressure_labels = {
+        "P1": "P1 - DU Evaporation Pressure (mbar)",
+        "P2": "P2 - Pressure (mbar)",
+        "P3": "P3 - OVC Pressure (mbar)",
+        "K5": "K5 - Injection Pressure (mbar)"
+    }
+    
+    for col, data in stats.items():
+        if data.get('type') == 'pressure':
+            label = pressure_labels.get(col, f"{col} (mbar)")
+            current_val = f"{data['current']:.2f}" if data.get('current') is not None else "N/A"
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*{label}*\n"
+                        f"• Min: `{data['min']:.2f}`\n"
+                        f"• Max: `{data['max']:.2f}`\n"
+                        f"• Current: `{current_val}`"
+                    )
+                }
+            })
     
     return blocks
 
@@ -367,9 +420,17 @@ def build_report_text(stats: Dict[str, Dict], filename: str) -> str:
         ""
     ]
     
+    # Temperature values
     for col, data in stats.items():
-        current_val = f"{data['current']:.6f}" if data.get('current') is not None else "N/A"
-        lines.append(f"{col}: Min={data['min']:.6f}, Max={data['max']:.6f}, Current={current_val}")
+        if data.get('type') == 'temperature':
+            current_val = f"{data['current']:.6f}" if data.get('current') is not None else "N/A"
+            lines.append(f"{col}: Min={data['min']:.6f}, Max={data['max']:.6f}, Current={current_val}")
+    
+    # Pressure values
+    for col, data in stats.items():
+        if data.get('type') == 'pressure':
+            current_val = f"{data['current']:.2f}" if data.get('current') is not None else "N/A"
+            lines.append(f"{col}: Min={data['min']:.2f}, Max={data['max']:.2f}, Current={current_val}")
     
     return "\n".join(lines)
 
