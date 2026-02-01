@@ -85,8 +85,6 @@ if not _has_handlers:
     logger.propagate = False
     
     # Initial startup messages
-    print("=== Dspx-Monitor Application Started ===")
-    print(f"Log file: {LOG_FILEPATH}")
     logger.info("=== Dspx-Monitor Application Started ===")
     logger.info(f"Log file: {LOG_FILEPATH}")
 
@@ -95,10 +93,6 @@ SECRETS = load_secrets()
 for key in SECRETS:
     logger.info(f"Loaded {key}")
 
-
-def display_metric(label, value):
-    """Display a metric value (compatible with Streamlit 0.62)"""
-    st.markdown(f"**{label}:** {value}")
 
 def send_slack_dm(bot_token: str, user_id: str, message: str, blocks: list = None) -> tuple[bool, str]:
     """
@@ -198,24 +192,9 @@ def send_slack_channel_message(bot_token: str, channel: str, message: str, block
         return False, f"Error sending message: {str(e)}"
 
 
-def send_slack_message(bot_token: str, target: str, message: str, blocks: list = None, is_user: bool = False) -> tuple[bool, str]:
-    """
-    Unified function to send a message to either a user (DM) or a channel.
-    
-    Args:
-        bot_token: Slack bot token (xoxb-...)
-        target: Either a user ID (for DM) or channel name/ID (for channel message)
-        message: Plain text message (used as fallback for blocks)
-        blocks: Optional Block Kit blocks for rich formatting
-        is_user: If True, treat target as a user ID and send a DM
-    
-    Returns:
-        Tuple of (success: bool, message: str)
-    """
-    if is_user:
-        return send_slack_dm(bot_token, target, message, blocks)
-    else:
-        return send_slack_channel_message(bot_token, target, message, blocks)
+def display_metric(label: str, value: str):
+    """Display a metric in a simple text format"""
+    st.text(f"{label}: {value}")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -341,9 +320,9 @@ def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400
     return fig
 
 
-def send_slack_report_sdk(bot_token: str, target: str, stats: dict, filename: str, is_user: bool = False) -> tuple[bool, str]:
+def send_slack_report(bot_token: str, target: str, stats: dict, filename: str, is_user: bool) -> tuple[bool, str]:
     """
-    Send daily report to Slack using the SDK (supports both channels and DMs).
+    Send daily report to Slack using the SDK (channel).
     
     Args:
         bot_token: Slack bot token
@@ -357,8 +336,9 @@ def send_slack_report_sdk(bot_token: str, target: str, stats: dict, filename: st
     """
     blocks = build_report_blocks(stats, filename)
     text = build_report_text(stats, filename)
-    
-    return send_slack_message(bot_token, target, text, blocks, is_user)
+    if is_user:
+        return send_slack_dm(bot_token, target, text, blocks)
+    return send_slack_channel_message(bot_token, target, text, blocks)
 
 
 def render_valve_grid(df):
@@ -581,10 +561,6 @@ def main():
     logger.info(f"Active date range: {start_date} to {end_date}, {len(files_to_load)} files to load")
     st.sidebar.text(f"📁 {len(files_to_load)} file(s) in active range")
     
-    if st.sidebar.button("🔄 Refresh Data"):
-        logger.info("User requested data refresh")
-        st.cache_data.clear()
-    
     st.sidebar.markdown("---")
     
     # Slack configuration
@@ -628,7 +604,7 @@ def main():
                 if df is not None:
                     stats = calculate_daily_stats(df)
                     date_range_str = f"{start_date} to {end_date}"
-                    success, message = send_slack_report_sdk(bot_token, channel, stats, date_range_str, is_user=False)
+                    success, message = send_slack_report(bot_token, channel, stats, date_range_str, False)
                     if success:
                         st.sidebar.success(message)
                     else:
@@ -653,7 +629,7 @@ def main():
                 if df is not None:
                     stats = calculate_daily_stats(df)
                     date_range_str = f"{start_date} to {end_date}"
-                    success, message = send_slack_report_sdk(bot_token, user_id, stats, date_range_str, is_user=True)
+                    success, message = send_slack_report(bot_token, user_id, stats, date_range_str, True)
                     if success:
                         st.sidebar.success(message)
                     else:
@@ -661,34 +637,18 @@ def main():
             else:
                 st.sidebar.error("No files available for selected date range")
     
+    # Call the monitoring fragment to check for updates
+    # This runs independently at the top and prompts user when new data is available
+    monitor_for_updates()
+    
     # Call the fragment to display data and charts
     # This fragment can be re-run independently without rerunning the whole page
     display_data_and_charts(files_to_load, start_date, end_date)
 
 
-@fragment(run_every="10s")
 def display_data_and_charts(files_to_load, start_date, end_date):
     """Fragment that displays data and charts. Can be re-run independently.
-    
-    Checks for refresh signals every 10 seconds and automatically
-    updates when new data is detected via the .refresh_signal file.
     """
-    # Check for refresh signal file (scheduler writes this when data files are updated)
-    signal_timestamp = read_refresh_signal()
-    if signal_timestamp is not None:
-        # Initialize last processed timestamp if not set
-        if 'last_processed_signal' not in st.session_state:
-            st.session_state['last_processed_signal'] = 0
-        
-        last_processed = st.session_state['last_processed_signal']
-        
-        if signal_timestamp > last_processed:
-            logger.info(f"Fragment detected refresh signal (timestamp: {signal_timestamp}), clearing cache")
-            st.cache_data.clear()
-            st.session_state['last_processed_signal'] = signal_timestamp
-            clear_refresh_signal()
-            st.info("📡 Data files updated - refreshing charts...")
-    
     # Load data for selected date range
     if not files_to_load:
         logger.warning("No data files found for selected date range")
@@ -878,8 +838,6 @@ def display_data_and_charts(files_to_load, start_date, end_date):
         if 'time_str' in df_display.columns:
             df_display = df_display.drop(columns=['time_str'])
         if 'time' in df_display.columns:
-            df_display = df_display.drop(columns=['time'])
-        if 'file_date' in df_display.columns:
             df_display = df_display.drop(columns=['file_date'])
         for col in df_display.columns:
             if df_display[col].dtype == 'datetime64[ns]' or 'datetime' in str(df_display[col].dtype):
@@ -887,8 +845,39 @@ def display_data_and_charts(files_to_load, start_date, end_date):
         st.write(df_display)
 
 
+@fragment(run_every="10s")
+def monitor_for_updates():
+    """Fragment that monitors for data updates and prompts user to reload.
+    This runs independently from the data display fragment.
+    """
+    logger.debug(f"Time: {datetime.now()} - Monitoring for data updates...")
+
+    # Check for refresh signal file (scheduler writes this when data files are updated)
+    signal_timestamp = read_refresh_signal()
+    # signal_timestamp = datetime.now().timestamp()  # Placeholder for testing
+    
+    if signal_timestamp is not None:
+        # Initialize last processed timestamp if not set
+        if 'last_processed_signal' not in st.session_state:
+            st.session_state['last_processed_signal'] = 0
+        
+        last_processed = st.session_state['last_processed_signal']
+        
+        if signal_timestamp > last_processed:
+            logger.info(f"Monitor detected new data update (timestamp: {signal_timestamp})")
+            
+            # Show notification to user
+            st.info("📡 New data available from scheduler!")
+            
+            # Provide reload button
+            if st.button("🔄 Reload Charts with New Data", key="reload_charts_btn"):
+                logger.info("User clicked reload button, clearing cache and refreshing")
+                st.cache_data.clear()
+                st.session_state['last_processed_signal'] = signal_timestamp
+                clear_refresh_signal()
+                # Trigger full page rerun to refresh all data
+                st.rerun()
+
+
 if __name__ == "__main__":
-    logger.info("=" * 50)
-    logger.info("Dspx-Monitor Dashboard starting")
-    logger.info("=" * 50)
     main()
