@@ -394,15 +394,15 @@ def build_report_blocks(stats: Dict[str, Dict], filename: str) -> List[Dict]:
     for col, data in stats.items():
         if data.get('type') == 'pressure':
             label = pressure_labels.get(col, f"{col} (mbar)")
-            current_val = f"{data['current']:.2f}" if data.get('current') is not None else "N/A"
+            current_val = f"{data['current']:.2e}" if data.get('current') is not None else "N/A"
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
                     "text": (
                         f"*{label}*\n"
-                        f"• Min: `{data['min']:.2f}`\n"
-                        f"• Max: `{data['max']:.2f}`\n"
+                        f"• Min: `{data['min']:.2e}`\n"
+                        f"• Max: `{data['max']:.2e}`\n"
                         f"• Current: `{current_val}`"
                     )
                 }
