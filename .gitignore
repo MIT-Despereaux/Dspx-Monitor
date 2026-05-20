@@ -128,6 +128,12 @@ dmypy.json
 data*/
 data*
 
+# uv
+.uv/
+.uv
+.uv-cache/
+.uv-cache
+
 # TOKEN files
 *.secret*
 *.token*
