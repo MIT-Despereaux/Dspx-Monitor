@@ -429,8 +429,8 @@ def build_report_text(stats: Dict[str, Dict], filename: str) -> str:
     # Pressure values
     for col, data in stats.items():
         if data.get('type') == 'pressure':
-            current_val = f"{data['current']:.2f}" if data.get('current') is not None else "N/A"
-            lines.append(f"{col}: Min={data['min']:.2f}, Max={data['max']:.2f}, Current={current_val}")
+            current_val = f"{data['current']:.2e}" if data.get('current') is not None else "N/A"
+            lines.append(f"{col}: Min={data['min']:.2e}, Max={data['max']:.2e}, Current={current_val}")
     
     return "\n".join(lines)
 

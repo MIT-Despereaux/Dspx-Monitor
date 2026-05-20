@@ -7,7 +7,7 @@ REM  Run this script from the Dspx-Monitor directory
 REM  with the conda environment activated
 REM ---------------------------------------------------------
 
-set SLACK_REPORT_CHANNEL=#despereaux
+if not defined SLACK_REPORT_CHANNEL set SLACK_REPORT_CHANNEL=#despereaux
 echo Starting Dspx-Monitor...
 echo.
 
@@ -15,8 +15,8 @@ REM ---------------------------------------------------------
 REM Start the scheduler in the background
 REM ---------------------------------------------------------
 echo Starting background scheduler...
-start /B python scheduler.py
-echo Scheduler started
+for /f "tokens=*" %%A in ('powershell -NoProfile -Command "Start-Process python -ArgumentList 'scheduler.py' -PassThru | Select-Object -ExpandProperty Id"') do set SCHEDULER_PID=%%A
+echo Scheduler started (PID: !SCHEDULER_PID!)
 echo.
 
 REM ---------------------------------------------------------
@@ -35,6 +35,11 @@ REM Cleanup after Streamlit exits
 REM ---------------------------------------------------------
 echo.
 echo Stopping services...
-wmic process where "name='python.exe' and CommandLine like '%%%scheduler.py%%%'" call terminate
+if defined SCHEDULER_PID (
+    wmic process where ProcessId=!SCHEDULER_PID! call terminate
+) else (
+    echo Warning: Could not determine scheduler PID, attempting generic termination
+    wmic process where "name='python.exe' and CommandLine like '%%%scheduler.py%%%'" call terminate
+)
 
 endlocal

@@ -7,7 +7,7 @@ from setuptools import setup
 
 setup(
     name="dspx-monitor",
-    version="2.0.0",
+    version="2.1.0",
     description="Cryogenic Dilution Refrigerator Monitoring Dashboard",
     author="MIT-Despereaux",
     python_requires=">=3.11",
