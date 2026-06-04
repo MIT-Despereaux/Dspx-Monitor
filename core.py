@@ -42,6 +42,8 @@ WARM_TEMPERATURE_THRESHOLD_K = 4.5
 OPERATING_MC_THRESHOLD_K = 0.1
 CONDENSATION_K5_THRESHOLD_MBAR = 2000.0
 OPERATING_PRESSURE_THRESHOLD_MBAR = 900.0
+TRANSITION_TIMEOUT = timedelta(hours=5)
+OPERATING_PT_OFF_GRACE_PERIOD = timedelta(minutes=1)
 
 
 class FridgeState(str, Enum):
@@ -107,6 +109,14 @@ class StateTransition:
     @property
     def changed(self) -> bool:
         return self.state != self.previous_state
+
+
+@dataclass(frozen=True)
+class FridgeFault:
+    """An active alarm condition produced by the state evaluator."""
+
+    code: str
+    message: str
 
 # Valve positions for the fridge diagram
 VALVE_POSITIONS = {
@@ -261,6 +271,8 @@ def evaluate_fridge_transition(
                 invalid_transition = "Condensation started before transition time began"
             else:
                 state = FridgeState.TRANSITION_TO_CONDENSATION
+        elif not reading.pt_on:
+            invalid_transition = "Pulse tube turned off before the 4 K cooldown completed"
 
     elif previous_state == FridgeState.TRANSITION_TO_CONDENSATION:
         if reading.k5_mbar > CONDENSATION_K5_THRESHOLD_MBAR:
@@ -279,6 +291,63 @@ def evaluate_fridge_transition(
             state = FridgeState.OPERATING
 
     return StateTransition(previous_state, state, invalid_transition=invalid_transition)
+
+
+def evaluate_fridge_faults(
+    state: FridgeState,
+    reading: FridgeReading,
+    state_entered_at: datetime,
+    now: datetime,
+    pt_off_since: Optional[datetime] = None,
+    invalid_transition: Optional[str] = None,
+) -> Dict[str, FridgeFault]:
+    """Return the active alarm conditions for a tracked fridge state."""
+    faults = {}
+
+    if invalid_transition:
+        faults["invalid_transition"] = FridgeFault(
+            "invalid_transition",
+            f"Invalid fridge state transition: {invalid_transition}",
+        )
+
+    if (
+        state == FridgeState.TRANSITION_TO_CONDENSATION
+        and now - state_entered_at > TRANSITION_TIMEOUT
+    ):
+        faults["transition_timeout"] = FridgeFault(
+            "transition_timeout",
+            "Transition to condensation has exceeded 5 hours",
+        )
+
+    if state == FridgeState.OPERATING:
+        high_pressures = [
+            f"{name}={value:.2f} mbar"
+            for name, value in (("K4", reading.k4_mbar), ("K5", reading.k5_mbar))
+            if value is not None and value > OPERATING_PRESSURE_THRESHOLD_MBAR
+        ]
+        if high_pressures:
+            faults["operating_pressure"] = FridgeFault(
+                "operating_pressure",
+                "Operating pressure is above 900 mbar: " + ", ".join(high_pressures),
+            )
+
+    if (
+        state in COLD_PT_REQUIRED_STATES
+        and reading.pt_on is False
+        and pt_off_since is not None
+    ):
+        grace_period = (
+            OPERATING_PT_OFF_GRACE_PERIOD
+            if state == FridgeState.OPERATING
+            else timedelta(0)
+        )
+        if now - pt_off_since > grace_period:
+            faults["pt_off"] = FridgeFault(
+                "pt_off",
+                f"Pulse tube is off while fridge state is {state.value}",
+            )
+
+    return faults
 
 
 # ============================================================================

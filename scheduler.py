@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import os
 import time
+import json
 import logging
 import schedule
-import pandas as pd
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Dict, Optional
 
 # Import shared core module
 from core import (
@@ -27,6 +29,14 @@ from core import (
     send_daily_report,
     write_refresh_signal,
     send_slack_message,
+    COLD_PT_REQUIRED_STATES,
+    FridgeFault,
+    FridgeState,
+    StateTransition,
+    evaluate_fridge_faults,
+    evaluate_fridge_transition,
+    extract_fridge_reading,
+    infer_fridge_state,
 )
 
 # Setup logging
@@ -46,6 +56,9 @@ logger = logging.getLogger("dspx_scheduler")
 # Configuration
 REPORT_TIME = "15:00"  # 3 PM
 CHECK_INTERVAL_MINUTES = 1
+ALARM_INTERVAL = timedelta(minutes=5)
+MAX_ALARM_MESSAGES = 3
+FRIDGE_STATE_FILE = os.path.join(LOG_DIR, "fridge_state.json")
 
 # Load secrets
 SECRETS = load_secrets()
@@ -57,135 +70,240 @@ SLACK_REPORT_USER = os.environ.get("SLACK_REPORT_USER", "")
 # Track file modification times
 file_mtimes = {}
 
-# Track K5 pressure monitoring state
-k5_above_threshold = False
-k5_threshold_start_time = None
-K5_THRESHOLD = 2000  # mbar
+
+@dataclass
+class AlarmRecord:
+    """Rate-limiting state for one continuous fault."""
+
+    message: str
+    successful_sends: int = 0
+    last_sent_at: Optional[datetime] = None
 
 
-def check_k5_pressure():
-    """Monitor K5 pressure and send condensation monitoring alerts when it crosses threshold."""
-    global k5_above_threshold, k5_threshold_start_time
-    
-    # Load latest data
+@dataclass
+class FridgeRuntimeState:
+    """Scheduler-owned state that survives process restarts."""
+
+    state: FridgeState
+    state_entered_at: datetime
+    pt_off_since: Optional[datetime] = None
+    alarms: Dict[str, AlarmRecord] = field(default_factory=dict)
+
+
+fridge_runtime_state: Optional[FridgeRuntimeState] = None
+
+
+def _datetime_to_text(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
+
+
+def _datetime_from_text(value: Optional[str]) -> Optional[datetime]:
+    return datetime.fromisoformat(value) if value else None
+
+
+def save_fridge_runtime_state(
+    runtime: FridgeRuntimeState,
+    filepath: Optional[str] = None,
+) -> None:
+    """Persist scheduler state atomically."""
+    filepath = filepath or FRIDGE_STATE_FILE
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    payload = {
+        "state": runtime.state.value,
+        "state_entered_at": _datetime_to_text(runtime.state_entered_at),
+        "pt_off_since": _datetime_to_text(runtime.pt_off_since),
+        "alarms": {
+            code: {
+                "message": record.message,
+                "successful_sends": record.successful_sends,
+                "last_sent_at": _datetime_to_text(record.last_sent_at),
+            }
+            for code, record in runtime.alarms.items()
+        },
+    }
+    temporary_path = filepath + ".tmp"
+    with open(temporary_path, "w", encoding="utf-8") as state_file:
+        json.dump(payload, state_file, indent=2)
+    os.replace(temporary_path, filepath)
+
+
+def load_fridge_runtime_state(
+    filepath: Optional[str] = None,
+) -> Optional[FridgeRuntimeState]:
+    """Restore persisted scheduler state, returning None when it is unusable."""
+    filepath = filepath or FRIDGE_STATE_FILE
+    try:
+        with open(filepath, "r", encoding="utf-8") as state_file:
+            payload = json.load(state_file)
+        state_entered_at = _datetime_from_text(payload["state_entered_at"])
+        if state_entered_at is None:
+            raise ValueError("state_entered_at is required")
+        return FridgeRuntimeState(
+            state=FridgeState(payload["state"]),
+            state_entered_at=state_entered_at,
+            pt_off_since=_datetime_from_text(payload.get("pt_off_since")),
+            alarms={
+                code: AlarmRecord(
+                    message=record["message"],
+                    successful_sends=int(record.get("successful_sends", 0)),
+                    last_sent_at=_datetime_from_text(record.get("last_sent_at")),
+                )
+                for code, record in payload.get("alarms", {}).items()
+            },
+        )
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+        logger.warning(f"Could not restore fridge state from {filepath}: {error}")
+        return None
+
+
+def update_fridge_runtime(
+    runtime: FridgeRuntimeState,
+    reading,
+    now: datetime,
+) -> tuple[FridgeRuntimeState, Dict[str, FridgeFault], StateTransition]:
+    """Advance runtime state and calculate active faults without sending messages."""
+    transition = evaluate_fridge_transition(runtime.state, reading)
+    if transition.changed:
+        runtime.state = transition.state
+        runtime.state_entered_at = now
+
+    if runtime.state in COLD_PT_REQUIRED_STATES and reading.pt_on is False:
+        runtime.pt_off_since = runtime.pt_off_since or now
+    else:
+        runtime.pt_off_since = None
+
+    faults = evaluate_fridge_faults(
+        runtime.state,
+        reading,
+        runtime.state_entered_at,
+        now,
+        runtime.pt_off_since,
+        transition.invalid_transition,
+    )
+
+    for code in list(runtime.alarms):
+        if code not in faults:
+            del runtime.alarms[code]
+    for code, fault in faults.items():
+        record = runtime.alarms.get(code)
+        if record is None or (
+            code == "invalid_transition" and record.message != fault.message
+        ):
+            runtime.alarms[code] = AlarmRecord(message=fault.message)
+        else:
+            record.message = fault.message
+
+    return runtime, faults, transition
+
+
+def alarm_is_due(record: AlarmRecord, now: datetime) -> bool:
+    """Return whether another Slack message may be attempted for a fault."""
+    if record.successful_sends >= MAX_ALARM_MESSAGES:
+        return False
+    return record.last_sent_at is None or now - record.last_sent_at >= ALARM_INTERVAL
+
+
+def _slack_destination() -> tuple[str, str, bool]:
+    return (
+        SECRETS.get("SLACK_BOT_TOKEN", ""),
+        SLACK_REPORT_CHANNEL or SLACK_REPORT_USER,
+        bool(SLACK_REPORT_USER and not SLACK_REPORT_CHANNEL),
+    )
+
+
+def _send_state_message(title: str, message: str, now: datetime) -> bool:
+    bot_token, target, is_dm = _slack_destination()
+    if not bot_token or not target:
+        return False
+    text = f"{title}\n\n{message}\nTime: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    blocks = [{
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": f"*{title}*\n{message}\n*Time:* {now.strftime('%Y-%m-%d %H:%M:%S')}"},
+    }]
+    success, error = send_slack_message(
+        bot_token=bot_token,
+        target=target,
+        text=text,
+        blocks=blocks,
+        is_dm=is_dm,
+        logger=logger,
+    )
+    if not success:
+        logger.error(f"Failed to send fridge state message: {error}")
+    return success
+
+
+def _format_duration(duration: timedelta) -> str:
+    total_seconds = int(duration.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {seconds}s"
+
+
+def check_fridge_state(now: Optional[datetime] = None):
+    """Load the latest reading, advance state, and send eligible alerts."""
+    global fridge_runtime_state
+
+    now = now or datetime.now()
     files = get_files_for_last_24_hours()
     if not files:
-        return
-    
+        return None
     df = load_multiple_files(files, logger)
     if df is None or len(df) == 0:
-        return
-    
-    # Get latest K5 value
-    if "K5" not in df.columns:
-        logger.warning("K5 column not found in data")
-        return
-    
-    k5_values = pd.to_numeric(df["K5"], errors="coerce")
-    current_k5 = k5_values.iloc[-1]
-    
-    if pd.isna(current_k5):
-        return
-    
-    logger.debug(f"K5 current value: {current_k5:.2f} mbar (threshold: {K5_THRESHOLD} mbar)")
-    
-    bot_token = SECRETS.get("SLACK_BOT_TOKEN", "")
-    target = SLACK_REPORT_CHANNEL or SLACK_REPORT_USER
-    is_dm = bool(SLACK_REPORT_USER and not SLACK_REPORT_CHANNEL)
-    
-    # Check if K5 crossed above threshold
-    if current_k5 > K5_THRESHOLD and not k5_above_threshold:
-        k5_above_threshold = True
-        k5_threshold_start_time = datetime.now()
-        
-        logger.warning(f"ℹ️ Condensation starting (K5: {current_k5:.2f} mbar, threshold: {K5_THRESHOLD} mbar)")
-        
-        if bot_token and target:
-            # Build alert message
-            alert_text = f"ℹ️ Condensation Monitoring\n\nCondensation starting\nK5 value: {current_k5:.2f} mbar (threshold: {K5_THRESHOLD} mbar)\nTime: {k5_threshold_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
-            
-            alert_blocks = [
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "ℹ️ Condensation Monitoring",
-                        "emoji": True
-                    }
-                },
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Condensation starting*\n• K5 threshold: `{K5_THRESHOLD} mbar`\n• Current K5: `{current_k5:.2f} mbar`\n• Start time: {k5_threshold_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
-                    }
-                }
-            ]
-            
-            success, message = send_slack_message(
-                bot_token=bot_token,
-                target=target,
-                text=alert_text,
-                blocks=alert_blocks,
-                is_dm=is_dm,
-                logger=logger
+        return None
+
+    reading = extract_fridge_reading(df.iloc[-1])
+    if fridge_runtime_state is None:
+        fridge_runtime_state = load_fridge_runtime_state()
+    if fridge_runtime_state is None:
+        inferred_state = infer_fridge_state(reading)
+        if inferred_state is None:
+            logger.warning("Could not infer initial fridge state from the latest reading")
+            return None
+        fridge_runtime_state = FridgeRuntimeState(inferred_state, now)
+        logger.info(f"Initialized fridge state as {inferred_state.value}")
+
+    previous_state_entered_at = fridge_runtime_state.state_entered_at
+    runtime, faults, transition = update_fridge_runtime(fridge_runtime_state, reading, now)
+
+    if transition.missing_fields:
+        logger.warning(f"Missing or invalid fridge state fields: {', '.join(transition.missing_fields)}")
+    if transition.changed:
+        logger.info(f"Fridge state changed: {transition.previous_state.value} -> {transition.state.value}")
+        if transition.state == FridgeState.CONDENSING:
+            _send_state_message(
+                "Condensation Monitoring",
+                f"Condensation starting\nK5 value: {reading.k5_mbar:.2f} mbar",
+                now,
             )
-            
-            if success:
-                logger.info("Condensation alert sent successfully")
-            else:
-                logger.error(f"Failed to send condensation alert: {message}")
-    
-    # Check if K5 dropped below threshold
-    elif current_k5 <= K5_THRESHOLD and k5_above_threshold:
-        duration = datetime.now() - k5_threshold_start_time
-        k5_above_threshold = False
-        
-        # Format duration
-        hours = int(duration.total_seconds() // 3600)
-        minutes = int((duration.total_seconds() % 3600) // 60)
-        seconds = int(duration.total_seconds() % 60)
-        duration_str = f"{hours}h {minutes}m {seconds}s"
-        
-        logger.info(f"ℹ️ Condensation finished (K5: {current_k5:.2f} mbar, duration: {duration_str})")
-        
-        if bot_token and target:
-            # Build recovery message
-            recovery_text = f"ℹ️ Condensation Monitoring\n\nCondensation finished\nTotal time: {duration_str}\nK5 value: {current_k5:.2f} mbar (threshold: {K5_THRESHOLD} mbar)\nEnd time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            
-            recovery_blocks = [
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": "ℹ️ Condensation Monitoring",
-                        "emoji": True
-                    }
-                },
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*Condensation finished*\n• Total time: `{duration_str}`\n• K5 threshold: `{K5_THRESHOLD} mbar`\n• Current K5: `{current_k5:.2f} mbar`\n• End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    }
-                }
-            ]
-            
-            success, message = send_slack_message(
-                bot_token=bot_token,
-                target=target,
-                text=recovery_text,
-                blocks=recovery_blocks,
-                is_dm=is_dm,
-                logger=logger
+        elif (
+            transition.previous_state == FridgeState.CONDENSING
+            and transition.state == FridgeState.DILUTION_COOLING_TO_100_MK
+        ):
+            _send_state_message(
+                "Condensation Monitoring",
+                (
+                    "Condensation finished\n"
+                    f"Total time: {_format_duration(now - previous_state_entered_at)}\n"
+                    f"K5 value: {reading.k5_mbar:.2f} mbar"
+                ),
+                now,
             )
-            
-            if success:
-                logger.info("Condensation finished alert sent successfully")
-            else:
-                logger.error(f"Failed to send condensation finished alert: {message}")
-        
-        k5_threshold_start_time = None
+
+    for code, fault in faults.items():
+        record = runtime.alarms[code]
+        if alarm_is_due(record, now):
+            logger.warning(f"Fridge alarm: {fault.message}")
+            if _send_state_message("Fridge Alarm", fault.message, now):
+                record.successful_sends += 1
+                record.last_sent_at = now
+
+    try:
+        save_fridge_runtime_state(runtime)
+    except OSError as error:
+        logger.error(f"Could not persist fridge state: {error}")
+    fridge_runtime_state = runtime
+    return runtime
 
 
 def check_file_updates():
@@ -276,10 +394,10 @@ def send_scheduled_report():
 
 
 def job_check_files():
-    """Scheduled job: Check for file updates and K5 pressure every minute."""
+    """Scheduled job: Check for file updates and fridge state every minute."""
     logger.debug("Running file check...")
     check_file_updates()
-    check_k5_pressure()
+    check_fridge_state()
 
 
 def job_send_daily_report():
@@ -293,7 +411,7 @@ def main():
     logger.info("Dspx-Monitor Scheduler Started")
     logger.info(f"Report time: {REPORT_TIME}")
     logger.info(f"File check interval: {CHECK_INTERVAL_MINUTES} minute(s)")
-    logger.info(f"K5 condensation monitoring threshold: {K5_THRESHOLD} mbar")
+    logger.info(f"Fridge state file: {FRIDGE_STATE_FILE}")
     logger.info("=" * 50)
     
     # Check configuration
