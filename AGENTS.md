@@ -59,3 +59,17 @@
 - Keep `README.md` up to date when setup, dependencies, run commands, data expectations, or user-facing behavior changes.
 - The README may lag package metadata; verify Python and dependency requirements against `setup.py` before changing setup instructions.
 - Preserve compatibility with the installed editable package. If a top-level Python file is imported by another module, include it in `py_modules` in `setup.py`.
+
+## Conventions
+- Use Gitmoji prefixes for commit messages and pull request titles when they
+  clarify the intent of a change. Prefer the shortcode form for portability,
+  for example `:sparkles: Add cleaning-cache notebook split`.
+- For feature-release work, use:
+  - `:sparkles:` for introducing or expanding user-facing features.
+  - `:bookmark:` for release or version-tag commits.
+  - `:white_check_mark:` for adding, updating, or fixing tests.
+  - `:memo:` for documentation-only updates.
+  - `:bug:` for bug fixes.
+  - `:recycle:` for refactors with no intended behavior change.
+  - `:wrench:` for configuration updates.
+  - `:construction:` only for explicitly incomplete work-in-progress commits.
