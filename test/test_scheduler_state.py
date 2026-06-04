@@ -1,0 +1,139 @@
+from datetime import datetime, timedelta
+
+import pandas as pd
+
+import scheduler
+from core import FridgeReading, FridgeState
+
+
+def reading(mc=0.05, still=1, four_k=4, pt=True, k4=800, k5=800):
+    return FridgeReading(mc, still, four_k, pt, k4, k5)
+
+
+def test_runtime_state_round_trip(tmp_path):
+    filepath = tmp_path / "state.json"
+    now = datetime(2026, 1, 1, 12, 0)
+    runtime = scheduler.FridgeRuntimeState(
+        state=FridgeState.OPERATING,
+        state_entered_at=now,
+        pt_off_since=now - timedelta(minutes=2),
+        alarms={
+            "pt_off": scheduler.AlarmRecord(
+                message="Pulse tube is off",
+                successful_sends=2,
+                last_sent_at=now - timedelta(minutes=5),
+            )
+        },
+    )
+
+    scheduler.save_fridge_runtime_state(runtime, str(filepath))
+    restored = scheduler.load_fridge_runtime_state(str(filepath))
+
+    assert restored == runtime
+
+
+def test_corrupted_runtime_state_returns_none(tmp_path):
+    filepath = tmp_path / "state.json"
+    filepath.write_text("{not json", encoding="utf-8")
+
+    assert scheduler.load_fridge_runtime_state(str(filepath)) is None
+
+
+def test_alarm_spacing_and_three_message_cap():
+    now = datetime(2026, 1, 1, 12, 0)
+    record = scheduler.AlarmRecord(message="fault")
+
+    assert scheduler.alarm_is_due(record, now)
+    record.successful_sends = 1
+    record.last_sent_at = now
+    assert not scheduler.alarm_is_due(record, now + timedelta(minutes=4, seconds=59))
+    assert scheduler.alarm_is_due(record, now + timedelta(minutes=5))
+    record.successful_sends = 3
+    assert not scheduler.alarm_is_due(record, now + timedelta(hours=1))
+
+
+def test_recovery_resets_alarm_record():
+    now = datetime(2026, 1, 1, 12, 0)
+    runtime = scheduler.FridgeRuntimeState(
+        FridgeState.OPERATING,
+        now,
+        alarms={
+            "operating_pressure": scheduler.AlarmRecord(
+                "Operating pressure is above 900 mbar",
+                successful_sends=3,
+                last_sent_at=now,
+            )
+        },
+    )
+
+    runtime, faults, _ = scheduler.update_fridge_runtime(runtime, reading(), now)
+
+    assert not faults
+    assert "operating_pressure" not in runtime.alarms
+
+
+def test_changing_pressure_value_does_not_reset_alarm_count():
+    now = datetime(2026, 1, 1, 12, 0)
+    runtime = scheduler.FridgeRuntimeState(
+        FridgeState.OPERATING,
+        now,
+        alarms={
+            "operating_pressure": scheduler.AlarmRecord(
+                "Operating pressure is above 900 mbar: K4=901.00 mbar",
+                successful_sends=2,
+                last_sent_at=now,
+            )
+        },
+    )
+
+    runtime, _, _ = scheduler.update_fridge_runtime(
+        runtime,
+        reading(k4=950),
+        now + timedelta(minutes=1),
+    )
+
+    assert runtime.alarms["operating_pressure"].successful_sends == 2
+
+
+def test_failed_alarm_delivery_does_not_increment_count(monkeypatch, tmp_path):
+    now = datetime(2026, 1, 1, 12, 0)
+    df = pd.DataFrame([{
+        "full range": 0.05,
+        "still": 1,
+        "Platine 4K": 4,
+        "PT": 1,
+        "K4": 901,
+        "K5": 800,
+    }])
+    scheduler.fridge_runtime_state = scheduler.FridgeRuntimeState(FridgeState.OPERATING, now)
+    monkeypatch.setattr(scheduler, "get_files_for_last_24_hours", lambda: ["fixture"])
+    monkeypatch.setattr(scheduler, "load_multiple_files", lambda files, logger: df)
+    monkeypatch.setattr(scheduler, "FRIDGE_STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(scheduler, "_send_state_message", lambda title, message, sent_at: False)
+
+    runtime = scheduler.check_fridge_state(now)
+
+    assert runtime.alarms["operating_pressure"].successful_sends == 0
+    assert runtime.alarms["operating_pressure"].last_sent_at is None
+
+
+def test_successful_alarm_delivery_increments_count(monkeypatch, tmp_path):
+    now = datetime(2026, 1, 1, 12, 0)
+    df = pd.DataFrame([{
+        "full range": 0.05,
+        "still": 1,
+        "Platine 4K": 4,
+        "PT": 1,
+        "K4": 901,
+        "K5": 800,
+    }])
+    scheduler.fridge_runtime_state = scheduler.FridgeRuntimeState(FridgeState.OPERATING, now)
+    monkeypatch.setattr(scheduler, "get_files_for_last_24_hours", lambda: ["fixture"])
+    monkeypatch.setattr(scheduler, "load_multiple_files", lambda files, logger: df)
+    monkeypatch.setattr(scheduler, "FRIDGE_STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(scheduler, "_send_state_message", lambda title, message, sent_at: True)
+
+    runtime = scheduler.check_fridge_state(now)
+
+    assert runtime.alarms["operating_pressure"].successful_sends == 1
+    assert runtime.alarms["operating_pressure"].last_sent_at == now
