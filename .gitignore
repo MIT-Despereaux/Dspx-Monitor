@@ -127,6 +127,9 @@ dmypy.json
 # Data folder (Symbolic Link)
 data*/
 data*
+!test/
+!test/data/
+!test/data/**
 
 # uv
 .uv/
