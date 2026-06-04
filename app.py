@@ -269,7 +269,7 @@ def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400
     for col in y_cols:
         if col in df.columns:
             y_values = pd.to_numeric(df[col], errors="coerce").tolist()
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=x_values,
                 y=y_values,
                 mode='lines',
@@ -399,7 +399,7 @@ def render_valve_timeline(df):
         if col in valve_df.columns:
             y_values = pd.to_numeric(valve_df[col], errors="coerce").tolist()
             # Only show VE1 by default, hide others (click legend to show)
-            fig.add_trace(go.Scattergl(
+            fig.add_trace(go.Scatter(
                 x=x_values,
                 y=y_values,
                 mode='lines',
