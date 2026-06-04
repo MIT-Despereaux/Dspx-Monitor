@@ -1,0 +1,5 @@
+scenario	full range	still	Platine 4K	PT	K4	K5
+operating_k4_high	0.05	1	4	1	901	800
+operating_k5_high	0.05	1	4	1	800	901
+operating_pt_off	0.05	1	4	0	800	800
+out_of_order_condensation	4	4	4	1	800	2100

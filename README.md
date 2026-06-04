@@ -33,6 +33,21 @@ Cryogenic Dilution Refrigerator Monitoring Dashboard built with Streamlit and Pl
 - Displays On/Off status with visual indicators
 - Timeline chart showing state changes
 
+### Fridge State Monitoring
+- The background scheduler tracks the refrigerator through `WARM`, `PT_COOLING_TO_4K`,
+  `TRANSITION_TO_CONDENSATION`, `CONDENSING`, `DILUTION_COOLING_TO_100_MK`, and
+  `OPERATING`
+- State is inferred from the `full range`, `still`, `Platine 4K`, `PT`, and `K5` readings
+- Runtime state, timers, and alarm counts are persisted in `logs/fridge_state.json`
+- State transitions and invalid readings are written to the scheduler log
+
+### Scheduler Alarms
+- Alerts when transition to condensation exceeds 5 hours
+- Alerts while operating when either `K4` or `K5` is above 900 mbar
+- Alerts when PT is off in cold states, with a 1-minute grace period while operating
+- Alerts on out-of-order state transitions
+- Each continuous fault sends at most 3 successful Slack messages, at least 5 minutes apart
+
 ### Valve Status
 - Visual grid display of all 39 valves (VE1-VE39)
 - 🟢 Open | 🔴 Closed
@@ -100,6 +115,19 @@ streamlit run app.py --server.port 8501
 ```
 
 The dashboard will be available at `http://localhost:8501`
+
+Run the scheduler separately to enable state tracking, alarms, refresh signaling, and
+daily Slack reports:
+
+```bash
+python scheduler.py
+```
+
+Run the test suite with:
+
+```bash
+pytest
+```
 
 ### Date Range Selection
 

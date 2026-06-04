@@ -8,7 +8,9 @@ from __future__ import annotations
 import os
 import logging
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import Optional, Dict, List, Any
 
 import pandas as pd
@@ -34,6 +36,87 @@ RESISTANCE_COLUMNS = ["R MMR1 1", "R MMR1 2", "R MMR1 3"]  # Units: Ohm
 MIXTURE_COLUMN = "P/T"  # Mixture percentage
 TURBO_AUX_COLUMN = "Turbo AUX"  # OVC turbo status (On/Off)
 PULSE_TUBE_COLUMN = "PT"  # Pulse tube status (On/Off)
+
+# Fridge state monitoring thresholds
+WARM_TEMPERATURE_THRESHOLD_K = 4.5
+OPERATING_MC_THRESHOLD_K = 0.1
+CONDENSATION_K5_THRESHOLD_MBAR = 2000.0
+OPERATING_PRESSURE_THRESHOLD_MBAR = 900.0
+TRANSITION_TIMEOUT = timedelta(hours=5)
+OPERATING_PT_OFF_GRACE_PERIOD = timedelta(minutes=1)
+
+
+class FridgeState(str, Enum):
+    """Named stages in a normal dilution refrigerator cycle."""
+
+    WARM = "WARM"
+    PT_COOLING_TO_4K = "PT_COOLING_TO_4K"
+    TRANSITION_TO_CONDENSATION = "TRANSITION_TO_CONDENSATION"
+    CONDENSING = "CONDENSING"
+    DILUTION_COOLING_TO_100_MK = "DILUTION_COOLING_TO_100_MK"
+    OPERATING = "OPERATING"
+
+
+COLD_PT_REQUIRED_STATES = {
+    FridgeState.TRANSITION_TO_CONDENSATION,
+    FridgeState.CONDENSING,
+    FridgeState.DILUTION_COOLING_TO_100_MK,
+    FridgeState.OPERATING,
+}
+
+
+@dataclass(frozen=True)
+class FridgeReading:
+    """Normalized values needed to evaluate the fridge state."""
+
+    mc_k: Optional[float]
+    still_k: Optional[float]
+    four_k_k: Optional[float]
+    pt_on: Optional[bool]
+    k4_mbar: Optional[float]
+    k5_mbar: Optional[float]
+
+    @property
+    def temperatures(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        return self.mc_k, self.still_k, self.four_k_k
+
+    @property
+    def has_temperatures(self) -> bool:
+        return all(value is not None for value in self.temperatures)
+
+    @property
+    def all_warm(self) -> bool:
+        return self.has_temperatures and all(
+            value > WARM_TEMPERATURE_THRESHOLD_K for value in self.temperatures
+        )
+
+    @property
+    def all_at_4k(self) -> bool:
+        return self.has_temperatures and all(
+            value <= WARM_TEMPERATURE_THRESHOLD_K for value in self.temperatures
+        )
+
+
+@dataclass(frozen=True)
+class StateTransition:
+    """Result of evaluating one reading against the tracked state."""
+
+    previous_state: FridgeState
+    state: FridgeState
+    invalid_transition: Optional[str] = None
+    missing_fields: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return self.state != self.previous_state
+
+
+@dataclass(frozen=True)
+class FridgeFault:
+    """An active alarm condition produced by the state evaluator."""
+
+    code: str
+    message: str
 
 # Valve positions for the fridge diagram
 VALVE_POSITIONS = {
@@ -98,6 +181,174 @@ def load_secrets() -> Dict[str, str]:
                         secrets[key] = value
     
     return secrets
+
+
+# ============================================================================
+# Fridge State Functions
+# ============================================================================
+
+def _numeric_value(value: Any) -> Optional[float]:
+    """Convert a data value to a finite float, or return None."""
+    converted = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return float(converted) if pd.notna(converted) else None
+
+
+def _boolean_value(value: Any) -> Optional[bool]:
+    """Convert a 0/1 data value to a boolean, or return None."""
+    converted = _numeric_value(value)
+    if converted == 0:
+        return False
+    if converted == 1:
+        return True
+    return None
+
+
+def extract_fridge_reading(row: pd.Series | Dict[str, Any]) -> FridgeReading:
+    """Extract normalized state-machine inputs from a data row."""
+    return FridgeReading(
+        mc_k=_numeric_value(row.get("full range")),
+        still_k=_numeric_value(row.get("still")),
+        four_k_k=_numeric_value(row.get("Platine 4K")),
+        pt_on=_boolean_value(row.get(PULSE_TUBE_COLUMN)),
+        k4_mbar=_numeric_value(row.get("K4")),
+        k5_mbar=_numeric_value(row.get("K5")),
+    )
+
+
+def get_missing_state_fields(reading: FridgeReading) -> tuple[str, ...]:
+    """Return fields required for state transitions that are missing or invalid."""
+    fields = {
+        "full range": reading.mc_k,
+        "still": reading.still_k,
+        "Platine 4K": reading.four_k_k,
+        "PT": reading.pt_on,
+        "K5": reading.k5_mbar,
+    }
+    return tuple(name for name, value in fields.items() if value is None)
+
+
+def infer_fridge_state(reading: FridgeReading) -> Optional[FridgeState]:
+    """Infer the most specific compatible state when no saved state exists."""
+    if get_missing_state_fields(reading):
+        return None
+    if reading.all_warm:
+        return FridgeState.PT_COOLING_TO_4K if reading.pt_on else FridgeState.WARM
+    if reading.all_at_4k:
+        if reading.mc_k < OPERATING_MC_THRESHOLD_K:
+            return FridgeState.OPERATING
+        if reading.k5_mbar > CONDENSATION_K5_THRESHOLD_MBAR:
+            return FridgeState.CONDENSING
+        return FridgeState.DILUTION_COOLING_TO_100_MK
+    if reading.pt_on:
+        return FridgeState.PT_COOLING_TO_4K
+    return None
+
+
+def evaluate_fridge_transition(
+    previous_state: FridgeState,
+    reading: FridgeReading,
+) -> StateTransition:
+    """Evaluate one reading while enforcing the ordered fridge lifecycle."""
+    missing_fields = get_missing_state_fields(reading)
+    if missing_fields:
+        return StateTransition(previous_state, previous_state, missing_fields=missing_fields)
+
+    if reading.all_warm and not reading.pt_on:
+        return StateTransition(previous_state, FridgeState.WARM)
+
+    invalid_transition = None
+    state = previous_state
+
+    if previous_state == FridgeState.WARM:
+        if reading.all_warm and reading.pt_on:
+            state = FridgeState.PT_COOLING_TO_4K
+        elif not reading.all_warm:
+            invalid_transition = "Fridge left WARM without entering PT cooling from warm conditions"
+
+    elif previous_state == FridgeState.PT_COOLING_TO_4K:
+        if reading.all_at_4k:
+            if reading.k5_mbar > CONDENSATION_K5_THRESHOLD_MBAR:
+                invalid_transition = "Condensation started before transition time began"
+            else:
+                state = FridgeState.TRANSITION_TO_CONDENSATION
+        elif not reading.pt_on:
+            invalid_transition = "Pulse tube turned off before the 4 K cooldown completed"
+
+    elif previous_state == FridgeState.TRANSITION_TO_CONDENSATION:
+        if reading.k5_mbar > CONDENSATION_K5_THRESHOLD_MBAR:
+            state = FridgeState.CONDENSING
+        elif reading.mc_k < OPERATING_MC_THRESHOLD_K:
+            invalid_transition = "MC reached operating temperature before condensation"
+
+    elif previous_state == FridgeState.CONDENSING:
+        if reading.k5_mbar <= CONDENSATION_K5_THRESHOLD_MBAR:
+            state = FridgeState.DILUTION_COOLING_TO_100_MK
+
+    elif previous_state == FridgeState.DILUTION_COOLING_TO_100_MK:
+        if reading.k5_mbar > CONDENSATION_K5_THRESHOLD_MBAR:
+            invalid_transition = "Condensation restarted after dilution cooling began"
+        elif reading.mc_k < OPERATING_MC_THRESHOLD_K:
+            state = FridgeState.OPERATING
+
+    return StateTransition(previous_state, state, invalid_transition=invalid_transition)
+
+
+def evaluate_fridge_faults(
+    state: FridgeState,
+    reading: FridgeReading,
+    state_entered_at: datetime,
+    now: datetime,
+    pt_off_since: Optional[datetime] = None,
+    invalid_transition: Optional[str] = None,
+) -> Dict[str, FridgeFault]:
+    """Return the active alarm conditions for a tracked fridge state."""
+    faults = {}
+
+    if invalid_transition:
+        faults["invalid_transition"] = FridgeFault(
+            "invalid_transition",
+            f"Invalid fridge state transition: {invalid_transition}",
+        )
+
+    if (
+        state == FridgeState.TRANSITION_TO_CONDENSATION
+        and now - state_entered_at > TRANSITION_TIMEOUT
+    ):
+        faults["transition_timeout"] = FridgeFault(
+            "transition_timeout",
+            "Transition to condensation has exceeded 5 hours",
+        )
+
+    if state == FridgeState.OPERATING:
+        high_pressures = [
+            f"{name}={value:.2f} mbar"
+            for name, value in (("K4", reading.k4_mbar), ("K5", reading.k5_mbar))
+            if value is not None and value > OPERATING_PRESSURE_THRESHOLD_MBAR
+        ]
+        if high_pressures:
+            faults["operating_pressure"] = FridgeFault(
+                "operating_pressure",
+                "Operating pressure is above 900 mbar: " + ", ".join(high_pressures),
+            )
+
+    if (
+        state in COLD_PT_REQUIRED_STATES
+        and reading.pt_on is False
+        and pt_off_since is not None
+    ):
+        pt_off_duration = now - pt_off_since
+        should_alarm = (
+            pt_off_duration > OPERATING_PT_OFF_GRACE_PERIOD
+            if state == FridgeState.OPERATING
+            else pt_off_duration >= timedelta(0)
+        )
+        if should_alarm:
+            faults["pt_off"] = FridgeFault(
+                "pt_off",
+                f"Pulse tube is off while fridge state is {state.value}",
+            )
+
+    return faults
 
 
 # ============================================================================
