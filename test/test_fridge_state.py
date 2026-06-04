@@ -153,3 +153,17 @@ def test_operating_pt_off_fault_has_one_minute_grace_period():
         off_since + timedelta(minutes=1, seconds=1),
         off_since,
     )
+
+
+def test_pt_off_fault_is_immediate_in_other_cold_states():
+    now = datetime(2026, 1, 1, 0, 0)
+
+    faults = evaluate_fridge_faults(
+        FridgeState.DILUTION_COOLING_TO_100_MK,
+        reading(1, 1, 4, False),
+        now,
+        now,
+        now,
+    )
+
+    assert "pt_off" in faults

@@ -336,12 +336,13 @@ def evaluate_fridge_faults(
         and reading.pt_on is False
         and pt_off_since is not None
     ):
-        grace_period = (
-            OPERATING_PT_OFF_GRACE_PERIOD
+        pt_off_duration = now - pt_off_since
+        should_alarm = (
+            pt_off_duration > OPERATING_PT_OFF_GRACE_PERIOD
             if state == FridgeState.OPERATING
-            else timedelta(0)
+            else pt_off_duration >= timedelta(0)
         )
-        if now - pt_off_since > grace_period:
+        if should_alarm:
             faults["pt_off"] = FridgeFault(
                 "pt_off",
                 f"Pulse tube is off while fridge state is {state.value}",
