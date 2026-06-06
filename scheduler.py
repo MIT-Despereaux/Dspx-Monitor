@@ -294,7 +294,8 @@ def check_fridge_state(now: Optional[datetime] = None):
         record = runtime.alarms[code]
         if alarm_is_due(record, now):
             logger.warning(f"Fridge alarm: {fault.message}")
-            if _send_state_message("Fridge Alarm", fault.message, now):
+            title = "HIGH SEVERITY Fridge Alarm" if fault.severity == "high" else "Fridge Alarm"
+            if _send_state_message(title, fault.message, now):
                 record.successful_sends += 1
                 record.last_sent_at = now
 

@@ -16,8 +16,8 @@ from core import (
 FIXTURE_DIR = Path(__file__).parent / "data"
 
 
-def reading(mc, still, four_k, pt, k4=800, k5=800):
-    return FridgeReading(mc, still, four_k, pt, k4, k5)
+def reading(mc, still, four_k, pt, k4=800, k5=800, p1=0, turbo_speed=0):
+    return FridgeReading(mc, still, four_k, pt, k4, k5, p1, turbo_speed)
 
 
 def test_complete_cycle_from_fixture():
@@ -40,6 +40,22 @@ def test_complete_cycle_from_fixture():
         FridgeState.DILUTION_COOLING_TO_100_MK,
         FridgeState.OPERATING,
     ]
+
+
+def test_extract_fridge_reading_includes_p1_and_dilution_turbo_speed():
+    current = extract_fridge_reading(pd.Series({
+        "full range": 0.05,
+        "still": 1.0,
+        "Platine 4K": 4.0,
+        "PT": 1,
+        "K4": 800,
+        "K5": 800,
+        "P1": 1.2,
+        "Pumping turbo speed": 75,
+    }))
+
+    assert current.p1_mbar == 1.2
+    assert current.dilution_turbo_speed_pct == 75
 
 
 def test_warm_conditions_reset_from_any_state():
@@ -133,6 +149,76 @@ def test_operating_pressure_fault_uses_either_k4_or_k5():
 
     assert "operating_pressure" in k4_faults
     assert "operating_pressure" in k5_faults
+
+
+def test_dilution_turbo_p1_fault_is_high_severity_in_every_fridge_state():
+    now = datetime(2026, 1, 1)
+
+    for state in FridgeState:
+        faults = evaluate_fridge_faults(
+            state,
+            reading(10, 10, 10, False, p1=1.01, turbo_speed=1),
+            now,
+            now,
+        )
+
+        assert faults["dilution_turbo_p1_high"].severity == "high"
+
+
+def test_dilution_turbo_p1_fault_requires_turbo_on_and_p1_above_one_mbar():
+    now = datetime(2026, 1, 1)
+
+    turbo_off = evaluate_fridge_faults(
+        FridgeState.WARM,
+        reading(10, 10, 10, False, p1=1.01, turbo_speed=0),
+        now,
+        now,
+    )
+    p1_at_limit = evaluate_fridge_faults(
+        FridgeState.WARM,
+        reading(10, 10, 10, False, p1=1.0, turbo_speed=50),
+        now,
+        now,
+    )
+
+    assert "dilution_turbo_p1_high" not in turbo_off
+    assert "dilution_turbo_p1_high" not in p1_at_limit
+
+
+def test_operating_temperature_faults_use_mc_and_still_thresholds():
+    now = datetime(2026, 1, 1)
+
+    mc_faults = evaluate_fridge_faults(
+        FridgeState.OPERATING,
+        reading(0.501, 1.3, 4, True),
+        now,
+        now,
+    )
+    still_faults = evaluate_fridge_faults(
+        FridgeState.OPERATING,
+        reading(0.5, 1.301, 4, True),
+        now,
+        now,
+    )
+
+    assert "operating_mc_temperature_high" in mc_faults
+    assert "operating_still_temperature_high" not in mc_faults
+    assert "operating_mc_temperature_high" not in still_faults
+    assert "operating_still_temperature_high" in still_faults
+
+
+def test_operating_temperature_faults_are_inactive_outside_operating_state():
+    now = datetime(2026, 1, 1)
+
+    faults = evaluate_fridge_faults(
+        FridgeState.DILUTION_COOLING_TO_100_MK,
+        reading(0.6, 1.4, 4, True),
+        now,
+        now,
+    )
+
+    assert "operating_mc_temperature_high" not in faults
+    assert "operating_still_temperature_high" not in faults
 
 
 def test_operating_pt_off_fault_has_one_minute_grace_period():

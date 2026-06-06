@@ -9,20 +9,28 @@
 - `scheduler.py` runs background checks, refresh signaling, and scheduled Slack reports.
 
 ## Environment Setup
-- Use uv for local setup.
-- Create the default uv virtual environment with:
+- Prefer the repository-local `.venv` virtual environment for all Python commands.
+- Create it explicitly with uv when it does not exist:
   ```bash
-  uv venv
+  uv venv .venv
   ```
 - In this workspace sandbox, uv may need a repo-local cache:
   ```bash
-  UV_CACHE_DIR=.uv-cache uv venv
+  UV_CACHE_DIR=.uv-cache uv venv .venv
   UV_CACHE_DIR=.uv-cache uv pip install -e .
   ```
 - Activate the environment with:
   ```bash
   source .venv/bin/activate
   ```
+- If `.venv` is unavailable or the uv setup fails, look for the Conda environment
+  named `dspx-mon`:
+  ```bash
+  conda env list
+  conda activate dspx-mon
+  ```
+- If neither `.venv` nor the `dspx-mon` Conda environment can be used, stop and
+  ask the user which Python environment to use.
 - Package metadata currently supports Python `>=3.11` so uv's default CPython interpreter can install the app.
 
 ## Run Commands

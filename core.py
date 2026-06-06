@@ -41,7 +41,10 @@ PULSE_TUBE_COLUMN = "PT"  # Pulse tube status (On/Off)
 WARM_TEMPERATURE_THRESHOLD_K = 4.5
 OPERATING_MC_THRESHOLD_K = 0.1
 CONDENSATION_K5_THRESHOLD_MBAR = 2000.0
-OPERATING_PRESSURE_THRESHOLD_MBAR = 900.0
+OPERATING_PRESSURE_THRESHOLD_MBAR = 570.0
+DILUTION_TURBO_P1_THRESHOLD_MBAR = 1.0
+OPERATING_MC_ALARM_THRESHOLD_K = 0.5
+OPERATING_STILL_ALARM_THRESHOLD_K = 1.3
 TRANSITION_TIMEOUT = timedelta(hours=5)
 OPERATING_PT_OFF_GRACE_PERIOD = timedelta(minutes=1)
 
@@ -75,6 +78,8 @@ class FridgeReading:
     pt_on: Optional[bool]
     k4_mbar: Optional[float]
     k5_mbar: Optional[float]
+    p1_mbar: Optional[float] = None
+    dilution_turbo_speed_pct: Optional[float] = None
 
     @property
     def temperatures(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
@@ -117,6 +122,7 @@ class FridgeFault:
 
     code: str
     message: str
+    severity: str = "normal"
 
 # Valve positions for the fridge diagram
 VALVE_POSITIONS = {
@@ -212,6 +218,8 @@ def extract_fridge_reading(row: pd.Series | Dict[str, Any]) -> FridgeReading:
         pt_on=_boolean_value(row.get(PULSE_TUBE_COLUMN)),
         k4_mbar=_numeric_value(row.get("K4")),
         k5_mbar=_numeric_value(row.get("K5")),
+        p1_mbar=_numeric_value(row.get("P1")),
+        dilution_turbo_speed_pct=_numeric_value(row.get(TURBO_COLUMN)),
     )
 
 
@@ -304,6 +312,22 @@ def evaluate_fridge_faults(
     """Return the active alarm conditions for a tracked fridge state."""
     faults = {}
 
+    if (
+        reading.dilution_turbo_speed_pct is not None
+        and reading.dilution_turbo_speed_pct > 0
+        and reading.p1_mbar is not None
+        and reading.p1_mbar > DILUTION_TURBO_P1_THRESHOLD_MBAR
+    ):
+        faults["dilution_turbo_p1_high"] = FridgeFault(
+            "dilution_turbo_p1_high",
+            (
+                "P1 is above 1 mbar while the dilution turbo is on: "
+                f"P1={reading.p1_mbar:.2f} mbar, "
+                f"turbo={reading.dilution_turbo_speed_pct:.2f}%"
+            ),
+            severity="high",
+        )
+
     if invalid_transition:
         faults["invalid_transition"] = FridgeFault(
             "invalid_transition",
@@ -320,6 +344,23 @@ def evaluate_fridge_faults(
         )
 
     if state == FridgeState.OPERATING:
+        if (
+            reading.mc_k is not None
+            and reading.mc_k > OPERATING_MC_ALARM_THRESHOLD_K
+        ):
+            faults["operating_mc_temperature_high"] = FridgeFault(
+                "operating_mc_temperature_high",
+                f"MC temperature is above 500 mK while operating: {reading.mc_k * 1000:.1f} mK",
+            )
+        if (
+            reading.still_k is not None
+            and reading.still_k > OPERATING_STILL_ALARM_THRESHOLD_K
+        ):
+            faults["operating_still_temperature_high"] = FridgeFault(
+                "operating_still_temperature_high",
+                f"Still temperature is above 1.3 K while operating: {reading.still_k:.3f} K",
+            )
+
         high_pressures = [
             f"{name}={value:.2f} mbar"
             for name, value in (("K4", reading.k4_mbar), ("K5", reading.k5_mbar))

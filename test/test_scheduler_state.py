@@ -137,3 +137,31 @@ def test_successful_alarm_delivery_increments_count(monkeypatch, tmp_path):
 
     assert runtime.alarms["operating_pressure"].successful_sends == 1
     assert runtime.alarms["operating_pressure"].last_sent_at == now
+
+
+def test_high_severity_alarm_uses_high_severity_slack_title(monkeypatch, tmp_path):
+    now = datetime(2026, 1, 1, 12, 0)
+    df = pd.DataFrame([{
+        "full range": 10,
+        "still": 10,
+        "Platine 4K": 10,
+        "PT": 0,
+        "K4": 800,
+        "K5": 800,
+        "P1": 1.1,
+        "Pumping turbo speed": 50,
+    }])
+    sent_titles = []
+    scheduler.fridge_runtime_state = scheduler.FridgeRuntimeState(FridgeState.WARM, now)
+    monkeypatch.setattr(scheduler, "get_files_for_last_24_hours", lambda: ["fixture"])
+    monkeypatch.setattr(scheduler, "load_multiple_files", lambda files, logger: df)
+    monkeypatch.setattr(scheduler, "FRIDGE_STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(
+        scheduler,
+        "_send_state_message",
+        lambda title, message, sent_at: sent_titles.append(title) or True,
+    )
+
+    scheduler.check_fridge_state(now)
+
+    assert sent_titles == ["HIGH SEVERITY Fridge Alarm"]

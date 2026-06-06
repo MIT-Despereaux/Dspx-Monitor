@@ -42,6 +42,8 @@ Cryogenic Dilution Refrigerator Monitoring Dashboard built with Streamlit and Pl
 - State transitions and invalid readings are written to the scheduler log
 
 ### Scheduler Alarms
+- High-severity alert in every fridge state when the dilution turbo speed is above 0% and `P1` exceeds 1 mbar
+- Alerts while operating when MC temperature exceeds 500 mK or Still temperature exceeds 1.3 K
 - Alerts when transition to condensation exceeds 5 hours
 - Alerts while operating when either `K4` or `K5` is above 900 mbar
 - Alerts when PT is off in cold states, with a 1-minute grace period while operating
