@@ -262,13 +262,24 @@ def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400
     """Create an interactive Plotly chart with zoom, crosshairs, and hover values"""
     fig = go.Figure()
     
+    # Validate x column exists
+    if x_col not in df.columns:
+        logger.warning(f"X column '{x_col}' not found in dataframe. Available columns: {df.columns.tolist()}")
+        fig.add_annotation(text=f"Time column '{x_col}' not available", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+        return fig
+    
     # Get x values
     x_values = df[x_col].tolist()
+    traces_added = 0
     
     # Add traces for each y column
     for col in y_cols:
         if col in df.columns:
             y_values = pd.to_numeric(df[col], errors="coerce").tolist()
+            # Check if all values are NaN
+            if pd.Series(y_values).isna().all():
+                logger.warning(f"All values in column '{col}' are NaN or invalid")
+                continue
             fig.add_trace(go.Scatter(
                 x=x_values,
                 y=y_values,
@@ -276,6 +287,12 @@ def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400
                 name=col,
                 hovertemplate=f'<b>{col}</b><br>Time: %{{x}}<br>Value: %{{y:.6g}}<extra></extra>'
             ))
+            traces_added += 1
+    
+    # If no traces were added, show a message
+    if traces_added == 0:
+        logger.warning(f"No valid data to plot. Requested columns: {y_cols}")
+        fig.add_annotation(text="No valid data to display", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
     
     # Configure layout with interactivity
     fig.update_layout(
@@ -300,6 +317,7 @@ def create_interactive_chart(df, x_col, y_cols, title="", y_label="", height=400
         xaxis=dict(
             fixedrange=False,  # Allow x-axis zoom
         ),
+        margin=dict(l=50, r=50, t=50, b=50),  # Ensure proper margins for rendering
     )
     
     # Add spike lines (crosshairs)
@@ -435,7 +453,7 @@ def render_valve_timeline(df):
     fig.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikedash="dot", spikemode="across")
     fig.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikedash="dot", spikemode="across")
     
-    st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+    st.plotly_chart(fig, width='stretch', key='valve_timeline', config={'displayModeBar': True, 'scrollZoom': True})
 
 def render_fridge_diagram(df):
     """Render the fridge diagram with valve status overlays"""
@@ -695,7 +713,7 @@ def display_data_and_charts(files_to_load, start_date, end_date):
         temp_df = df[[time_col] + temp_cols].copy()
         temp_df = downsample_for_chart(temp_df)
         fig = create_interactive_chart(temp_df, time_col, temp_cols, y_label="Temperature (K)", log_scale=temp_log)
-        st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+        st.plotly_chart(fig, width='stretch', key='temp_chart', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pressure Section
     st.header("📊 Pressure (mbar)")
@@ -713,7 +731,7 @@ def display_data_and_charts(files_to_load, start_date, end_date):
             pressure_df = df[[time_col] + pressure_cols_available].copy()
             pressure_df = downsample_for_chart(pressure_df)
             fig = create_interactive_chart(pressure_df, time_col, pressure_cols_available, y_label="Pressure (mbar)", log_scale=pressure_log)
-            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', key='pressure_chart', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pressure K Section (K3, K4, K5, K6, K8)
     st.header("📊 Pressure Sensors (K3-K8)")
@@ -731,7 +749,7 @@ def display_data_and_charts(files_to_load, start_date, end_date):
             pressure_k_df = df[[time_col] + pressure_k_cols_available].copy()
             pressure_k_df = downsample_for_chart(pressure_k_df)
             fig = create_interactive_chart(pressure_k_df, time_col, pressure_k_cols_available, y_label="Pressure", log_scale=pressure_k_log)
-            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', key='pressure_k_chart', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Turbo Speed Section
     st.header("🔄 Turbo Pump Speed (%)")
@@ -746,7 +764,7 @@ def display_data_and_charts(files_to_load, start_date, end_date):
             turbo_df = df[[time_col, TURBO_COLUMN]].copy()
             turbo_df = downsample_for_chart(turbo_df)
             fig = create_interactive_chart(turbo_df, time_col, [TURBO_COLUMN], y_label="Speed (%)", log_scale=False)
-            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', key='turbo_chart', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Resistance Section
     st.header("⚡ Resistance MMR1 (Ω)")
@@ -764,7 +782,7 @@ def display_data_and_charts(files_to_load, start_date, end_date):
             resistance_df = df[[time_col] + resistance_cols_available].copy()
             resistance_df = downsample_for_chart(resistance_df)
             fig = create_interactive_chart(resistance_df, time_col, resistance_cols_available, y_label="Resistance (Ω)", log_scale=resistance_log)
-            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', key='resistance_chart', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Mixture Percentage Section (P/T)
     st.header("🧪 Mixture Percentage (P/T)")
@@ -779,7 +797,7 @@ def display_data_and_charts(files_to_load, start_date, end_date):
             mixture_df = df[[time_col, MIXTURE_COLUMN]].copy()
             mixture_df = downsample_for_chart(mixture_df)
             fig = create_interactive_chart(mixture_df, time_col, [MIXTURE_COLUMN], y_label="Mixture (%)", log_scale=False)
-            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', key='mixture_chart', config={'displayModeBar': True, 'scrollZoom': True})
     
     # OVC Turbo Status Section (Turbo AUX)
     st.header("🔄 OVC Turbo Status (Turbo AUX)")
@@ -795,7 +813,7 @@ def display_data_and_charts(files_to_load, start_date, end_date):
             turbo_aux_df = df[[time_col, TURBO_AUX_COLUMN]].copy()
             turbo_aux_df = downsample_for_chart(turbo_aux_df)
             fig = create_interactive_chart(turbo_aux_df, time_col, [TURBO_AUX_COLUMN], y_label="Status (0=Off, 1=On)", log_scale=False)
-            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', key='turbo_aux_chart', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Pulse Tube Status Section (PT)
     st.header("❄️ Pulse Tube Status (PT)")
@@ -811,7 +829,7 @@ def display_data_and_charts(files_to_load, start_date, end_date):
             pt_df = df[[time_col, PULSE_TUBE_COLUMN]].copy()
             pt_df = downsample_for_chart(pt_df)
             fig = create_interactive_chart(pt_df, time_col, [PULSE_TUBE_COLUMN], y_label="Status (0=Off, 1=On)", log_scale=False)
-            st.plotly_chart(fig, width='stretch', config={'displayModeBar': True, 'scrollZoom': True})
+            st.plotly_chart(fig, width='stretch', key='pulse_tube_chart', config={'displayModeBar': True, 'scrollZoom': True})
     
     # Valve Status Section
     st.header("Valve Status")

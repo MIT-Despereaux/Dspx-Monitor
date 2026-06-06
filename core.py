@@ -496,6 +496,12 @@ def load_data_file(filepath: str, logger: Optional[logging.Logger] = None) -> Op
         if 'heures' in df.columns:
             df['time'] = pd.to_datetime(df['heures'], format='%H:%M:%S', errors='coerce')
             df['time_str'] = df['heures']
+        else:
+            # Create a default time_str if heures column is missing
+            # This ensures charts will still render even with malformed data
+            if logger:
+                logger.warning(f"'heures' column not found in {os.path.basename(filepath)}")
+            df['time_str'] = '00:00:00'
         
         if logger:
             logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns from {os.path.basename(filepath)}")
