@@ -41,7 +41,7 @@ PULSE_TUBE_COLUMN = "PT"  # Pulse tube status (On/Off)
 WARM_TEMPERATURE_THRESHOLD_K = 4.5
 OPERATING_MC_THRESHOLD_K = 0.1
 CONDENSATION_K5_THRESHOLD_MBAR = 2000.0
-OPERATING_PRESSURE_THRESHOLD_MBAR = 570.0
+OPERATING_PRESSURE_THRESHOLD_MBAR = 900.0
 DILUTION_TURBO_P1_THRESHOLD_MBAR = 1.0
 OPERATING_MC_ALARM_THRESHOLD_K = 0.5
 OPERATING_STILL_ALARM_THRESHOLD_K = 1.3
@@ -72,14 +72,14 @@ COLD_PT_REQUIRED_STATES = {
 class FridgeReading:
     """Normalized values needed to evaluate the fridge state."""
 
-    mc_k: Optional[float]
-    still_k: Optional[float]
-    four_k_k: Optional[float]
-    pt_on: Optional[bool]
-    k4_mbar: Optional[float]
-    k5_mbar: Optional[float]
-    p1_mbar: Optional[float] = None
-    dilution_turbo_speed_pct: Optional[float] = None
+    mc_k: Optional[float] = -1.0
+    still_k: Optional[float] = -1.0
+    four_k_k: Optional[float] = -1.0
+    pt_on: Optional[bool] = False
+    k4_mbar: Optional[float] = -1.0
+    k5_mbar: Optional[float] = -1.0
+    p1_mbar: Optional[float] = -1.0
+    dilution_turbo_speed_pct: Optional[float] = 0.0
 
     @property
     def temperatures(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
@@ -321,7 +321,7 @@ def evaluate_fridge_faults(
         faults["dilution_turbo_p1_high"] = FridgeFault(
             "dilution_turbo_p1_high",
             (
-                "P1 is above 1 mbar while the dilution turbo is on: "
+                f"P1 is above {DILUTION_TURBO_P1_THRESHOLD_MBAR:.1f} mbar while the dilution turbo is on: "
                 f"P1={reading.p1_mbar:.2f} mbar, "
                 f"turbo={reading.dilution_turbo_speed_pct:.2f}%"
             ),
@@ -340,7 +340,7 @@ def evaluate_fridge_faults(
     ):
         faults["transition_timeout"] = FridgeFault(
             "transition_timeout",
-            "Transition to condensation has exceeded 5 hours",
+            f"Transition to condensation has exceeded {TRANSITION_TIMEOUT.total_seconds() / 3600:.1f} hours",
         )
 
     if state == FridgeState.OPERATING:
@@ -350,7 +350,7 @@ def evaluate_fridge_faults(
         ):
             faults["operating_mc_temperature_high"] = FridgeFault(
                 "operating_mc_temperature_high",
-                f"MC temperature is above 500 mK while operating: {reading.mc_k * 1000:.1f} mK",
+                f"MC temperature is above {OPERATING_MC_ALARM_THRESHOLD_K * 1000:.1f} mK while operating: {reading.mc_k * 1000:.1f} mK",
             )
         if (
             reading.still_k is not None
@@ -358,7 +358,7 @@ def evaluate_fridge_faults(
         ):
             faults["operating_still_temperature_high"] = FridgeFault(
                 "operating_still_temperature_high",
-                f"Still temperature is above 1.3 K while operating: {reading.still_k:.3f} K",
+                f"Still temperature is above {OPERATING_STILL_ALARM_THRESHOLD_K:.3f} K while operating: {reading.still_k:.3f} K",
             )
 
         high_pressures = [
@@ -369,7 +369,7 @@ def evaluate_fridge_faults(
         if high_pressures:
             faults["operating_pressure"] = FridgeFault(
                 "operating_pressure",
-                "Operating pressure is above 900 mbar: " + ", ".join(high_pressures),
+                f"Injection pressure K4/K5 is above {OPERATING_PRESSURE_THRESHOLD_MBAR:.1f} mbar: " + ", ".join(high_pressures),
             )
 
     if (
