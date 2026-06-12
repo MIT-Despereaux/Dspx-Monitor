@@ -45,6 +45,7 @@ OPERATING_MC_THRESHOLD_K = 0.1
 CONDENSATION_K5_THRESHOLD_MBAR = 2000.0
 OPERATING_PRESSURE_THRESHOLD_MBAR = 900.0
 DILUTION_TURBO_P1_THRESHOLD_MBAR = 1.0
+WARMUP_DILUTION_TURBO_P1_THRESHOLD_MBAR = 5.0
 OPERATING_MC_ALARM_THRESHOLD_K = 0.5
 OPERATING_STILL_ALARM_THRESHOLD_K = 1.3
 TRANSITION_TIMEOUT = timedelta(hours=5)
@@ -338,17 +339,22 @@ def evaluate_fridge_faults(
 ) -> Dict[str, FridgeFault]:
     """Return the active alarm conditions for a tracked fridge state."""
     faults = {}
+    dilution_turbo_p1_threshold = (
+        WARMUP_DILUTION_TURBO_P1_THRESHOLD_MBAR
+        if state == FridgeState.WARMING_UP
+        else DILUTION_TURBO_P1_THRESHOLD_MBAR
+    )
 
     if (
         reading.dilution_turbo_speed_pct is not None
         and reading.dilution_turbo_speed_pct > 0
         and reading.p1_mbar is not None
-        and reading.p1_mbar > DILUTION_TURBO_P1_THRESHOLD_MBAR
+        and reading.p1_mbar > dilution_turbo_p1_threshold
     ):
         faults["dilution_turbo_p1_high"] = FridgeFault(
             "dilution_turbo_p1_high",
             (
-                f"P1 is above {DILUTION_TURBO_P1_THRESHOLD_MBAR:.1f} mbar while the dilution turbo is on: "
+                f"P1 is above {dilution_turbo_p1_threshold:.1f} mbar while the dilution turbo is on: "
                 f"P1={reading.p1_mbar:.2f} mbar, "
                 f"turbo={reading.dilution_turbo_speed_pct:.2f}%"
             ),

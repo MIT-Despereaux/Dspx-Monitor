@@ -198,10 +198,10 @@ def test_operating_pressure_fault_uses_either_k4_or_k5():
     assert "operating_pressure" in k5_faults
 
 
-def test_dilution_turbo_p1_fault_is_high_severity_in_every_fridge_state():
+def test_dilution_turbo_p1_fault_is_high_severity_outside_warming_up():
     now = datetime(2026, 1, 1)
 
-    for state in FridgeState:
+    for state in set(FridgeState) - {FridgeState.WARMING_UP}:
         faults = evaluate_fridge_faults(
             state,
             reading(10, 10, 10, False, p1=1.01, turbo_speed=1),
@@ -210,6 +210,27 @@ def test_dilution_turbo_p1_fault_is_high_severity_in_every_fridge_state():
         )
 
         assert faults["dilution_turbo_p1_high"].severity == "high"
+
+
+def test_warming_up_dilution_turbo_p1_fault_uses_five_mbar_threshold():
+    now = datetime(2026, 1, 1)
+
+    at_limit = evaluate_fridge_faults(
+        FridgeState.WARMING_UP,
+        reading(1, 2, 6, False, p1=5.0, turbo_speed=50),
+        now,
+        now,
+    )
+    above_limit = evaluate_fridge_faults(
+        FridgeState.WARMING_UP,
+        reading(1, 2, 6, False, p1=5.01, turbo_speed=50),
+        now,
+        now,
+    )
+
+    assert "dilution_turbo_p1_high" not in at_limit
+    assert above_limit["dilution_turbo_p1_high"].severity == "high"
+    assert "5.0 mbar" in above_limit["dilution_turbo_p1_high"].message
 
 
 def test_dilution_turbo_p1_fault_requires_turbo_on_and_p1_above_one_mbar():
