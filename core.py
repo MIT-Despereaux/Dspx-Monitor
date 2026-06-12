@@ -36,6 +36,8 @@ RESISTANCE_COLUMNS = ["R MMR1 1", "R MMR1 2", "R MMR1 3"]  # Units: Ohm
 MIXTURE_COLUMN = "P/T"  # Mixture percentage
 TURBO_AUX_COLUMN = "Turbo AUX"  # OVC turbo status (On/Off)
 PULSE_TUBE_COLUMN = "PT"  # Pulse tube status (On/Off)
+WARMUP_OPEN_VALVES = ("VE22", "VE28")
+WARMUP_CLOSED_VALVES = ("VE1", "VE2", "VE3", "VE7")
 
 # Fridge state monitoring thresholds
 WARM_TEMPERATURE_THRESHOLD_K = 4.5
@@ -58,6 +60,7 @@ class FridgeState(str, Enum):
     CONDENSING = "CONDENSING"
     DILUTION_COOLING_TO_100_MK = "DILUTION_COOLING_TO_100_MK"
     OPERATING = "OPERATING"
+    WARMING_UP = "WARMING_UP"
 
 
 COLD_PT_REQUIRED_STATES = {
@@ -80,6 +83,7 @@ class FridgeReading:
     k5_mbar: Optional[float] = -1.0
     p1_mbar: Optional[float] = -1.0
     dilution_turbo_speed_pct: Optional[float] = 0.0
+    warmup_valves_configured: Optional[bool] = False
 
     @property
     def temperatures(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
@@ -209,6 +213,15 @@ def _boolean_value(value: Any) -> Optional[bool]:
     return None
 
 
+def _warmup_valves_configured(row: pd.Series | Dict[str, Any]) -> Optional[bool]:
+    """Return whether the valves match the warm-up configuration."""
+    open_states = [_boolean_value(row.get(name)) for name in WARMUP_OPEN_VALVES]
+    closed_states = [_boolean_value(row.get(name)) for name in WARMUP_CLOSED_VALVES]
+    if any(state is None for state in open_states + closed_states):
+        return None
+    return all(open_states) and not any(closed_states)
+
+
 def extract_fridge_reading(row: pd.Series | Dict[str, Any]) -> FridgeReading:
     """Extract normalized state-machine inputs from a data row."""
     return FridgeReading(
@@ -220,6 +233,7 @@ def extract_fridge_reading(row: pd.Series | Dict[str, Any]) -> FridgeReading:
         k5_mbar=_numeric_value(row.get("K5")),
         p1_mbar=_numeric_value(row.get("P1")),
         dilution_turbo_speed_pct=_numeric_value(row.get(TURBO_COLUMN)),
+        warmup_valves_configured=_warmup_valves_configured(row),
     )
 
 
@@ -241,6 +255,8 @@ def infer_fridge_state(reading: FridgeReading) -> Optional[FridgeState]:
         return None
     if reading.all_warm:
         return FridgeState.PT_COOLING_TO_4K if reading.pt_on else FridgeState.WARM
+    if reading.pt_on is False and reading.warmup_valves_configured:
+        return FridgeState.WARMING_UP
     if reading.all_at_4k:
         if reading.mc_k < OPERATING_MC_THRESHOLD_K:
             return FridgeState.OPERATING
@@ -263,6 +279,13 @@ def evaluate_fridge_transition(
 
     if reading.all_warm and not reading.pt_on:
         return StateTransition(previous_state, FridgeState.WARM)
+
+    if (
+        previous_state in COLD_PT_REQUIRED_STATES
+        and reading.pt_on is False
+        and reading.warmup_valves_configured
+    ):
+        return StateTransition(previous_state, FridgeState.WARMING_UP)
 
     invalid_transition = None
     state = previous_state
@@ -297,6 +320,10 @@ def evaluate_fridge_transition(
             invalid_transition = "Condensation restarted after dilution cooling began"
         elif reading.mc_k < OPERATING_MC_THRESHOLD_K:
             state = FridgeState.OPERATING
+
+    elif previous_state == FridgeState.WARMING_UP:
+        if reading.pt_on:
+            invalid_transition = "Pulse tube turned on while the fridge was warming up"
 
     return StateTransition(previous_state, state, invalid_transition=invalid_transition)
 

@@ -16,8 +16,28 @@ from core import (
 FIXTURE_DIR = Path(__file__).parent / "data"
 
 
-def reading(mc, still, four_k, pt, k4=800, k5=800, p1=0, turbo_speed=0):
-    return FridgeReading(mc, still, four_k, pt, k4, k5, p1, turbo_speed)
+def reading(
+    mc,
+    still,
+    four_k,
+    pt,
+    k4=800,
+    k5=800,
+    p1=0,
+    turbo_speed=0,
+    warmup_valves=False,
+):
+    return FridgeReading(
+        mc,
+        still,
+        four_k,
+        pt,
+        k4,
+        k5,
+        p1,
+        turbo_speed,
+        warmup_valves,
+    )
 
 
 def test_complete_cycle_from_fixture():
@@ -42,7 +62,7 @@ def test_complete_cycle_from_fixture():
     ]
 
 
-def test_extract_fridge_reading_includes_p1_and_dilution_turbo_speed():
+def test_extract_fridge_reading_includes_alarm_and_warmup_signals():
     current = extract_fridge_reading(pd.Series({
         "full range": 0.05,
         "still": 1.0,
@@ -52,10 +72,18 @@ def test_extract_fridge_reading_includes_p1_and_dilution_turbo_speed():
         "K5": 800,
         "P1": 1.2,
         "Pumping turbo speed": 75,
+        "VE1": 0,
+        "VE2": 0,
+        "VE3": 0,
+        "VE7": 0,
+        "VE22": 1,
+        "VE27": 1,
+        "VE28": 1,
     }))
 
     assert current.p1_mbar == 1.2
     assert current.dilution_turbo_speed_pct == 75
+    assert current.warmup_valves_configured is True
 
 
 def test_warm_conditions_reset_from_any_state():
@@ -66,6 +94,25 @@ def test_warm_conditions_reset_from_any_state():
 
     assert result.state == FridgeState.WARM
     assert result.changed
+
+
+def test_operating_enters_warming_up_when_pt_is_off_and_valves_are_configured():
+    result = evaluate_fridge_transition(
+        FridgeState.OPERATING,
+        reading(0.24, 1.47, 5.38, False, warmup_valves=True),
+    )
+
+    assert result.state == FridgeState.WARMING_UP
+    assert result.changed
+
+
+def test_warming_up_reaches_warm_after_all_stages_exceed_threshold():
+    result = evaluate_fridge_transition(
+        FridgeState.WARMING_UP,
+        reading(10, 10, 10, False, warmup_valves=True),
+    )
+
+    assert result.state == FridgeState.WARM
 
 
 def test_out_of_order_condensation_does_not_change_state():

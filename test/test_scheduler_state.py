@@ -6,8 +6,24 @@ import scheduler
 from core import FridgeReading, FridgeState
 
 
-def reading(mc=0.05, still=1, four_k=4, pt=True, k4=800, k5=800):
-    return FridgeReading(mc, still, four_k, pt, k4, k5)
+def reading(
+    mc=0.05,
+    still=1,
+    four_k=4,
+    pt=True,
+    k4=800,
+    k5=800,
+    warmup_valves=False,
+):
+    return FridgeReading(
+        mc,
+        still,
+        four_k,
+        pt,
+        k4,
+        k5,
+        warmup_valves_configured=warmup_valves,
+    )
 
 
 def test_runtime_state_round_trip(tmp_path):
@@ -93,6 +109,48 @@ def test_changing_pressure_value_does_not_reset_alarm_count():
     )
 
     assert runtime.alarms["operating_pressure"].successful_sends == 2
+
+
+def test_intended_warmup_clears_operating_alarms_and_suppresses_pt_fault():
+    now = datetime(2026, 6, 12, 16, 33, 18)
+    runtime = scheduler.FridgeRuntimeState(
+        FridgeState.OPERATING,
+        now - timedelta(days=1),
+        pt_off_since=now - timedelta(seconds=30),
+        alarms={
+            "operating_mc_temperature_high": scheduler.AlarmRecord("MC high"),
+        },
+    )
+
+    runtime, faults, transition = scheduler.update_fridge_runtime(
+        runtime,
+        reading(mc=0.243, still=1.468, four_k=5.38, pt=False, warmup_valves=True),
+        now,
+    )
+
+    assert transition.state == FridgeState.WARMING_UP
+    assert runtime.state == FridgeState.WARMING_UP
+    assert runtime.pt_off_since is None
+    assert not faults
+    assert not runtime.alarms
+
+
+def test_unintended_operating_pt_shutdown_still_alarms_after_grace_period():
+    now = datetime(2026, 6, 12, 16, 33, 18)
+    runtime = scheduler.FridgeRuntimeState(
+        FridgeState.OPERATING,
+        now - timedelta(days=1),
+        pt_off_since=now - timedelta(minutes=1, seconds=1),
+    )
+
+    runtime, faults, transition = scheduler.update_fridge_runtime(
+        runtime,
+        reading(pt=False, warmup_valves=False),
+        now,
+    )
+
+    assert transition.state == FridgeState.OPERATING
+    assert "pt_off" in faults
 
 
 def test_failed_alarm_delivery_does_not_increment_count(monkeypatch, tmp_path):

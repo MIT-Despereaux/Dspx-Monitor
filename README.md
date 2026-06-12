@@ -36,8 +36,11 @@ Cryogenic Dilution Refrigerator Monitoring Dashboard built with Streamlit and Pl
 ### Fridge State Monitoring
 - The background scheduler tracks the refrigerator through `WARM`, `PT_COOLING_TO_4K`,
   `TRANSITION_TO_CONDENSATION`, `CONDENSING`, `DILUTION_COOLING_TO_100_MK`, and
-  `OPERATING`
-- State is inferred from the `full range`, `still`, `Platine 4K`, `PT`, and `K5` readings
+  `OPERATING`, followed by `WARMING_UP` during an intended warm-up
+- State is inferred from the temperature, `PT`, `K5`, and relevant valve readings
+- `PT=0` enters `WARMING_UP` when `VE22` and `VE28` are open and
+  `VE1`, `VE2`, `VE3`, and `VE7` are closed; a PT shutdown without that
+  valve configuration remains an alarm condition
 - Runtime state, timers, and alarm counts are persisted in `logs/fridge_state.json`
 - State transitions and invalid readings are written to the scheduler log
 
@@ -46,7 +49,7 @@ Cryogenic Dilution Refrigerator Monitoring Dashboard built with Streamlit and Pl
 - Alerts while operating when MC temperature exceeds 500 mK or Still temperature exceeds 1.3 K
 - Alerts when transition to condensation exceeds 5 hours
 - Alerts while operating when either `K4` or `K5` is above 900 mbar
-- Alerts when PT is off in cold states, with a 1-minute grace period while operating
+- Alerts when PT is off unexpectedly in cold states, with a 1-minute grace period while operating
 - Alerts on out-of-order state transitions
 - Each continuous fault sends at most 3 successful Slack messages, at least 5 minutes apart
 
