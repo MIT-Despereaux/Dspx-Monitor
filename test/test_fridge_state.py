@@ -145,6 +145,17 @@ def test_missing_values_do_not_change_state():
     assert result.missing_fields == ("still",)
 
 
+def test_nonpositive_4k_reading_is_ignored_as_invalid_sensor_data():
+    result = evaluate_fridge_transition(
+        FridgeState.WARM,
+        reading(70, 100, 0, False),
+    )
+
+    assert result.state == FridgeState.WARM
+    assert result.invalid_transition is None
+    assert result.missing_fields == ("Platine 4K",)
+
+
 def test_bootstrap_inference_prefers_specific_cold_states():
     assert infer_fridge_state(reading(0.05, 1, 4, True, k5=800)) == FridgeState.OPERATING
     assert infer_fridge_state(reading(1, 1, 4, True, k5=2100)) == FridgeState.CONDENSING

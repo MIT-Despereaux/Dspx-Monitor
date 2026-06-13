@@ -247,7 +247,11 @@ def get_missing_state_fields(reading: FridgeReading) -> tuple[str, ...]:
         "PT": reading.pt_on,
         "K5": reading.k5_mbar,
     }
-    return tuple(name for name, value in fields.items() if value is None)
+    invalid_fields = []
+    for name, value in fields.items():
+        if value is None or (name in TEMP_COLUMNS and value <= 0):
+            invalid_fields.append(name)
+    return tuple(invalid_fields)
 
 
 def infer_fridge_state(reading: FridgeReading) -> Optional[FridgeState]:

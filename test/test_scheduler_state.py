@@ -88,6 +88,22 @@ def test_recovery_resets_alarm_record():
     assert "operating_pressure" not in runtime.alarms
 
 
+def test_4k_sensor_dropout_does_not_create_invalid_transition_alarm():
+    now = datetime(2026, 6, 13, 6, 40)
+    runtime = scheduler.FridgeRuntimeState(FridgeState.WARM, now - timedelta(hours=1))
+
+    runtime, faults, transition = scheduler.update_fridge_runtime(
+        runtime,
+        reading(mc=70, still=100, four_k=0, pt=False),
+        now,
+    )
+
+    assert runtime.state == FridgeState.WARM
+    assert transition.missing_fields == ("Platine 4K",)
+    assert "invalid_transition" not in faults
+    assert "invalid_transition" not in runtime.alarms
+
+
 def test_changing_pressure_value_does_not_reset_alarm_count():
     now = datetime(2026, 1, 1, 12, 0)
     runtime = scheduler.FridgeRuntimeState(
